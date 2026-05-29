@@ -71,7 +71,7 @@ jobs:
           pr_number: ${{ inputs.pr_number }}
           base_branch: ${{ inputs.base_branch }}
           required_context: ${{ inputs.required_context }}
-          wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
+          wait_for_other_checks: ${{ inputs.pr_number == '' && 'false' || inputs.wait_for_other_checks }}
           publish_status: ${{ inputs.publish_status }}
           skip_status_for_dependabot: ${{ inputs.skip_status_for_dependabot }}
         env:

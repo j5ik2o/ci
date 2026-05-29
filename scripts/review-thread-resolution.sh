@@ -503,6 +503,18 @@ filter_unacknowledged_comments() {
           and (
             ($body | contains("<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"))
             or ($body | contains("<!-- This is an auto-generated comment by CodeRabbit for review status -->"))
+            or ($body | contains("<!-- walkthrough_start -->"))
+            or ($body | contains("<!-- pre_merge_checks_walkthrough_start -->"))
+            or ($body | contains("## Review limit reached"))
+            or ($body | contains("## Walkthrough"))
+          )
+        )
+        or (
+          $author == "renovate"
+          and (
+            ($body | contains("### Edited Notification"))
+            or ($body | contains("### Blocked Notification"))
+            or ($body | contains("### Edited/Blocked Notification"))
           )
         )
         or (
@@ -517,6 +529,10 @@ filter_unacknowledged_comments() {
         or (
           $author == "chatgpt-codex-connector"
           and ($body | contains("Codex Review"))
+        )
+        or (
+          $author == "renovate"
+          and ($body | startswith("### Edited/Blocked Notification"))
         );
     def trusted_acknowledgement:
       (report_author_login == "chatgpt-codex-connector")
@@ -694,6 +710,7 @@ run_refresh_all() {
   local pr_numbers=()
   local overall=0
   local result
+  local original_wait_for_other_checks="$WAIT_FOR_OTHER_CHECKS"
 
   mapfile -t pr_numbers < <(list_open_prs)
   if [[ "${#pr_numbers[@]}" -eq 0 ]]; then
@@ -701,6 +718,7 @@ run_refresh_all() {
     return 0
   fi
 
+  WAIT_FOR_OTHER_CHECKS=0
   for pr_number in "${pr_numbers[@]}"; do
     set +e
     check_pr "$pr_number"
@@ -715,6 +733,7 @@ run_refresh_all() {
       overall=1
     fi
   done
+  WAIT_FOR_OTHER_CHECKS="$original_wait_for_other_checks"
 
   return "$overall"
 }

@@ -1,0 +1,132 @@
+name: TAKT Review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number to review.
+        required: true
+        type: string
+      comment_body:
+        description: Trigger comment body, if the review was requested from issue_comment.
+        required: false
+        type: string
+        default: ""
+      workflow:
+        description: TAKT workflow name.
+        required: false
+        type: string
+        default: review-takt-default
+      provider:
+        description: TAKT provider.
+        required: false
+        type: string
+        default: claude-sdk
+      model:
+        description: Model passed to the TAKT wrapper.
+        required: false
+        type: string
+        default: claude-sonnet-4-5-20250929
+      wrapper_script:
+        description: Path to the caller repository TAKT wrapper script.
+        required: false
+        type: string
+        default: .github/scripts/takt-review-wrapper.mjs
+      ci_ref:
+        description: Ref of j5ik2o/ci to check out for shared actions. Pin this to the same tag as the reusable workflow.
+        required: false
+        type: string
+        default: v1
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: takt-review-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  takt-review:
+    name: TAKT Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR checkout
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::PR number must be numeric: $PR_NUMBER"
+            exit 1
+          fi
+
+          pr_json="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          head_sha="$(jq -r '.head.sha' <<< "$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name' <<< "$pr_json")"
+          head_ref="$(jq -r '.head.ref' <<< "$pr_json")"
+          is_draft="$(jq -r '.draft' <<< "$pr_json")"
+          author="$(jq -r '.user.login' <<< "$pr_json")"
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "ref=$head_sha" >> "$GITHUB_OUTPUT"
+
+          if [[ "$is_draft" == "true" ]]; then
+            echo "::notice::Skipping TAKT review for draft PR #$PR_NUMBER"
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$head_repo" != "$REPOSITORY" ]]; then
+            echo "::notice::Skipping TAKT review for fork PR head: $head_repo"
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$author" == "app/renovate" || "$author" == "renovate[bot]" || "$head_ref" == renovate/* ]]; then
+            echo "::notice::Skipping TAKT review for Renovate PR #$PR_NUMBER"
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "reviewable=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout caller repository
+        if: steps.pr.outputs.reviewable == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          persist-credentials: false
+
+      - name: Checkout shared CI actions
+        if: steps.pr.outputs.reviewable == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: j5ik2o/ci
+          ref: ${{ inputs.ci_ref }}
+          path: .shared-ci
+          persist-credentials: false
+
+      - name: Run TAKT review wrapper
+        if: steps.pr.outputs.reviewable == 'true'
+        uses: ./.shared-ci/actions/takt-review-wrapper
+        with:
+          wrapper_script: ${{ inputs.wrapper_script }}
+          pr_number: ${{ steps.pr.outputs.number }}
+          pr_head_sha: ${{ steps.pr.outputs.ref }}
+          comment_body: ${{ inputs.comment_body }}
+          workflow: ${{ inputs.workflow }}
+          provider: ${{ inputs.provider }}
+          model: ${{ inputs.model }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}

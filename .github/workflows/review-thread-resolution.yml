@@ -1,0 +1,74 @@
+name: Review Thread Resolution
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: PR number to refresh. Leave empty to refresh all open PRs for base_branch.
+        required: false
+        type: string
+        default: ""
+      base_branch:
+        description: Base branch to evaluate.
+        required: false
+        type: string
+        default: main
+      required_context:
+        description: Commit status context published for branch protection.
+        required: false
+        type: string
+        default: Check unresolved comments
+      wait_for_other_checks:
+        description: Wait for other PR checks before evaluating review threads.
+        required: false
+        type: boolean
+        default: true
+      publish_status:
+        description: Publish the synthetic commit status on same-repository PR heads.
+        required: false
+        type: boolean
+        default: true
+      ci_ref:
+        description: Ref of j5ik2o/ci to check out for shared scripts. Pin this to the same tag as the reusable workflow.
+        required: false
+        type: string
+        default: v1
+
+permissions:
+  contents: read
+  checks: write
+  issues: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: review-thread-resolution-${{ inputs.wait_for_other_checks == false && 'ci-' || 'event-' }}${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || 'refresh-all' }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && inputs.wait_for_other_checks != false }}
+
+jobs:
+  unresolved-comments:
+    name: ${{ inputs.wait_for_other_checks == false && 'Evaluate CI review-thread gate' || 'Refresh review-thread state' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout shared CI scripts
+        uses: actions/checkout@v6
+        with:
+          repository: j5ik2o/ci
+          ref: ${{ inputs.ci_ref }}
+          path: .shared-ci
+          persist-credentials: false
+
+      - name: Evaluate review-thread state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          REQUIRED_CONTEXT: ${{ inputs.required_context }}
+          WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks == false && '0' || '1' }}
+          PUBLISH_STATUS: ${{ inputs.publish_status == false && '0' || '1' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .shared-ci/scripts/review-thread-resolution.sh

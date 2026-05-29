@@ -525,6 +525,7 @@ filter_unacknowledged_comments() {
         $comments[]
         | select(
             (ignored_auto_report | not)
+            and (trusted_acknowledgement | not)
             and ((.author.login // "") != $pr_author)
             and (
               $pr_author_type != "Bot"

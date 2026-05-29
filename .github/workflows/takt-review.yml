@@ -58,7 +58,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: takt-review-${{ inputs.pr_number }}
+  group: takt-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: false
 
 jobs:

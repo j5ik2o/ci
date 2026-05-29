@@ -463,10 +463,11 @@ fetch_top_level_comments() {
 
     page_comments="$(
       jq -c '.data.repository.pullRequest.reviews.nodes
-        | map(select((.body // "") != "" and .state != "DISMISSED"))
+        | map(select((.body // "") != "" and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")))
         | map({
             url,
             body,
+            state,
             createdAt: .submittedAt,
             updatedAt: (.updatedAt // .submittedAt),
             authorAssociation,

@@ -710,6 +710,9 @@ run_refresh_all() {
       overall=1
     elif [[ "$result" -eq 2 ]]; then
       echo "::notice::PR #$pr_number still has unresolved review state; keeping this refresh-all workflow successful."
+    elif [[ "$result" -ne 0 ]]; then
+      echo "::error::Unexpected result while refreshing PR #$pr_number: $result"
+      overall=1
     fi
   done
 

@@ -60,15 +60,14 @@ jobs:
           persist-credentials: false
 
       - name: Evaluate review-thread state
+        uses: ./.shared-ci/actions/review-thread-resolution
+        with:
+          repository: ${{ github.repository }}
+          pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          base_branch: ${{ inputs.base_branch }}
+          required_context: ${{ inputs.required_context }}
+          wait_for_other_checks: ${{ inputs.wait_for_other_checks == false && 'false' || 'true' }}
+          publish_status: ${{ inputs.publish_status == false && 'false' || 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_BRANCH: ${{ inputs.base_branch }}
-          REQUIRED_CONTEXT: ${{ inputs.required_context }}
-          WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks == false && '0' || '1' }}
-          PUBLISH_STATUS: ${{ inputs.publish_status == false && '0' || '1' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: bash .shared-ci/scripts/review-thread-resolution.sh

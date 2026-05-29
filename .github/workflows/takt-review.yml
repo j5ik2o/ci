@@ -5,8 +5,14 @@ on:
     inputs:
       pr_number:
         description: Pull request number to review.
-        required: true
+        required: false
         type: string
+        default: ""
+      event_head_sha:
+        description: Pull request event head SHA. Used to skip stale pull_request runs.
+        required: false
+        type: string
+        default: ""
       comment_body:
         description: Trigger comment body, if the review was requested from issue_comment.
         required: false
@@ -32,6 +38,11 @@ on:
         required: false
         type: string
         default: .github/scripts/takt-review-wrapper.mjs
+      non_blocking:
+        description: Treat TAKT runtime failures as warnings while keeping setup defects failing.
+        required: false
+        type: string
+        default: "true"
       ci_ref:
         description: Ref of j5ik2o/ci to check out for shared actions. Pin this to the same tag as the reusable workflow.
         required: false
@@ -61,41 +72,98 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_EVENT_HEAD_SHA: ${{ inputs.event_head_sha }}
+          INPUT_COMMENT_BODY: ${{ inputs.comment_body }}
+          EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-            echo "::error::PR number must be numeric: $PR_NUMBER"
+          resolve_pr_number() {
+            if [[ -n "${PR_NUMBER:-}" && "$PR_NUMBER" != "null" ]]; then
+              printf '%s\n' "$PR_NUMBER"
+              return 0
+            fi
+            jq -r '
+              if (.pull_request.number? // null) != null then
+                (.pull_request.number | tostring)
+              elif (.issue.pull_request? // null) != null and (.issue.number? // null) != null then
+                (.issue.number | tostring)
+              else
+                ""
+              end
+            ' "$GITHUB_EVENT_PATH"
+          }
+
+          skip_review() {
+            echo "::notice::$1"
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          event_head_sha="$INPUT_EVENT_HEAD_SHA"
+          if [[ -z "$event_head_sha" || "$event_head_sha" == "null" ]]; then
+            event_head_sha="$(jq -r '.pull_request.head.sha? // ""' "$GITHUB_EVENT_PATH")"
+          fi
+
+          pr_number="$(resolve_pr_number)"
+          if [[ -z "$pr_number" || "$pr_number" == "null" ]]; then
+            skip_review "Skipping TAKT review because this event does not target a pull request."
+          fi
+          if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+            echo "::error::PR number must be numeric: $pr_number"
             exit 1
           fi
 
-          pr_json="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          sender_type="$(jq -r '.sender.type? // ""' "$GITHUB_EVENT_PATH")"
+          if [[ "$sender_type" == "Bot" ]]; then
+            skip_review "Skipping TAKT review for bot sender."
+          fi
+
+          if [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            issue_state="$(jq -r '.issue.state? // ""' "$GITHUB_EVENT_PATH")"
+            comment_body="$INPUT_COMMENT_BODY"
+            if [[ -z "$comment_body" || "$comment_body" == "null" ]]; then
+              comment_body="$(jq -r '.comment.body? // ""' "$GITHUB_EVENT_PATH")"
+            fi
+            author_association="$(jq -r '.comment.author_association? // ""' "$GITHUB_EVENT_PATH")"
+
+            if [[ "$issue_state" != "open" ]]; then
+              skip_review "Skipping TAKT review for non-open PR #$pr_number."
+            fi
+            if [[ "$comment_body" != @takt* ]]; then
+              skip_review "Skipping TAKT review because the comment does not start with @takt."
+            fi
+            case "$author_association" in
+              OWNER|MEMBER|COLLABORATOR) ;;
+              *) skip_review "Skipping TAKT review for untrusted comment author association: $author_association." ;;
+            esac
+          fi
+
+          pr_json="$(gh api "repos/$REPOSITORY/pulls/$pr_number")"
           head_sha="$(jq -r '.head.sha' <<< "$pr_json")"
           head_repo="$(jq -r '.head.repo.full_name' <<< "$pr_json")"
           head_ref="$(jq -r '.head.ref' <<< "$pr_json")"
           is_draft="$(jq -r '.draft' <<< "$pr_json")"
           author="$(jq -r '.user.login' <<< "$pr_json")"
 
-          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "ref=$head_sha" >> "$GITHUB_OUTPUT"
 
+          if [[ "$EVENT_NAME" == "pull_request" && -n "$event_head_sha" && "$head_sha" != "$event_head_sha" ]]; then
+            skip_review "Skipping stale TAKT review for PR #$pr_number because head changed from $event_head_sha to $head_sha."
+          fi
+
           if [[ "$is_draft" == "true" ]]; then
-            echo "::notice::Skipping TAKT review for draft PR #$PR_NUMBER"
-            echo "reviewable=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            skip_review "Skipping TAKT review for draft PR #$pr_number."
           fi
 
           if [[ "$head_repo" != "$REPOSITORY" ]]; then
-            echo "::notice::Skipping TAKT review for fork PR head: $head_repo"
-            echo "reviewable=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            skip_review "Skipping TAKT review for fork PR head: $head_repo."
           fi
 
           if [[ "$author" == "app/renovate" || "$author" == "renovate[bot]" || "$head_ref" == renovate/* ]]; then
-            echo "::notice::Skipping TAKT review for Renovate PR #$PR_NUMBER"
-            echo "reviewable=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            skip_review "Skipping TAKT review for Renovate PR #$pr_number."
           fi
 
           echo "reviewable=true" >> "$GITHUB_OUTPUT"
@@ -127,6 +195,7 @@ jobs:
           workflow: ${{ inputs.workflow }}
           provider: ${{ inputs.provider }}
           model: ${{ inputs.model }}
+          non_blocking: ${{ inputs.non_blocking }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}

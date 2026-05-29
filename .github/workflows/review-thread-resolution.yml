@@ -21,13 +21,18 @@ on:
       wait_for_other_checks:
         description: Wait for other PR checks before evaluating review threads.
         required: false
-        type: boolean
-        default: true
+        type: string
+        default: "true"
       publish_status:
         description: Publish the synthetic commit status on same-repository PR heads.
         required: false
-        type: boolean
-        default: true
+        type: string
+        default: "true"
+      skip_status_for_dependabot:
+        description: Skip synthetic commit status publication for Dependabot PR authors.
+        required: false
+        type: string
+        default: "true"
       ci_ref:
         description: Ref of j5ik2o/ci to check out for shared scripts. Pin this to the same tag as the reusable workflow.
         required: false
@@ -42,12 +47,12 @@ permissions:
   statuses: write
 
 concurrency:
-  group: review-thread-resolution-${{ inputs.wait_for_other_checks == false && 'ci-' || 'event-' }}${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || 'refresh-all' }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && inputs.wait_for_other_checks != false }}
+  group: review-thread-resolution-${{ inputs.wait_for_other_checks == 'false' && 'ci-' || 'event-' }}${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || 'refresh-all' }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && inputs.wait_for_other_checks != 'false' }}
 
 jobs:
   unresolved-comments:
-    name: ${{ inputs.wait_for_other_checks == false && 'Evaluate CI review-thread gate' || 'Refresh review-thread state' }}
+    name: ${{ inputs.wait_for_other_checks == 'false' && 'Evaluate CI review-thread gate' || 'Refresh review-thread state' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -63,11 +68,12 @@ jobs:
         uses: ./.shared-ci/actions/review-thread-resolution
         with:
           repository: ${{ github.repository }}
-          pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          pr_number: ${{ inputs.pr_number }}
           base_branch: ${{ inputs.base_branch }}
           required_context: ${{ inputs.required_context }}
-          wait_for_other_checks: ${{ inputs.wait_for_other_checks == false && 'false' || 'true' }}
-          publish_status: ${{ inputs.publish_status == false && 'false' || 'true' }}
+          wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
+          publish_status: ${{ inputs.publish_status }}
+          skip_status_for_dependabot: ${{ inputs.skip_status_for_dependabot }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}

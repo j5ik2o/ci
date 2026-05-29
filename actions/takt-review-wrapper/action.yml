@@ -27,6 +27,10 @@ inputs:
     description: Model passed to the TAKT wrapper.
     required: false
     default: claude-sonnet-4-5-20250929
+  non_blocking:
+    description: Treat TAKT runtime failures as warnings while keeping setup defects failing.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -39,4 +43,5 @@ runs:
         TAKT_WORKFLOW: ${{ inputs.workflow }}
         TAKT_PROVIDER: ${{ inputs.provider }}
         TAKT_MODEL: ${{ inputs.model }}
+        TAKT_NON_BLOCKING: ${{ inputs.non_blocking }}
       run: bash "$GITHUB_ACTION_PATH/run.sh" "${{ inputs.wrapper_script }}"

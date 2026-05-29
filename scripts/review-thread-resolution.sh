@@ -708,7 +708,7 @@ run_refresh_all() {
     if [[ "$result" -eq 1 ]]; then
       overall=1
     elif [[ "$result" -eq 2 ]]; then
-      echo "::notice::PR #$pr_number still has unresolved review state; synthetic status was refreshed without failing this refresh-all workflow."
+      echo "::notice::PR #$pr_number still has unresolved review state; keeping this refresh-all workflow successful."
     fi
   done
 

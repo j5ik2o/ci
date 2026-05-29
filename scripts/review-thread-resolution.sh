@@ -467,6 +467,9 @@ filter_unacknowledged_comments() {
           $author == "chatgpt-codex-connector"
           and ($body | contains("Codex Review"))
         );
+    def trusted_acknowledgement:
+      (report_author_login == "chatgpt-codex-connector")
+      and ((.body // "") | test("(?i)^\\s*(acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました)"));
     . as $comments
     | [
         $comments[]
@@ -487,6 +490,7 @@ filter_unacknowledged_comments() {
             $comments[]
             | select(
                 (.author.login // "") == $pr_author
+                or trusted_acknowledgement
                 or (
                   $pr_author_type == "Bot"
                   and (

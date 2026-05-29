@@ -25,6 +25,10 @@ inputs:
     description: Publish the synthetic commit status on same-repository PR heads.
     required: false
     default: "true"
+  skip_status_for_dependabot:
+    description: Skip synthetic commit status publication for Dependabot PR authors.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -36,7 +40,8 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         BASE_BRANCH: ${{ inputs.base_branch }}
         REQUIRED_CONTEXT: ${{ inputs.required_context }}
-        WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks == 'false' && '0' || '1' }}
-        PUBLISH_STATUS: ${{ inputs.publish_status == 'false' && '0' || '1' }}
+        WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks }}
+        PUBLISH_STATUS: ${{ inputs.publish_status }}
+        SKIP_STATUS_FOR_DEPENDABOT: ${{ inputs.skip_status_for_dependabot }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: bash "$GITHUB_ACTION_PATH/../../scripts/review-thread-resolution.sh"

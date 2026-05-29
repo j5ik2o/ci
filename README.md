@@ -38,10 +38,14 @@ on:
         description: PR number to refresh. Leave empty to refresh all open main PRs.
         required: false
         type: string
+      wait_for_other_checks:
+        description: Wait for other PR checks before evaluating review threads.
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   refresh:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event.pull_request != null || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
     uses: j5ik2o/ci/.github/workflows/review-thread-resolution.yml@v1
     permissions:
       contents: read
@@ -50,7 +54,8 @@ jobs:
       issues: read
       pull-requests: read
     with:
-      pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      pr_number: ${{ inputs.pr_number }}
+      wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
       base_branch: main
       required_context: Check unresolved comments
       ci_ref: v1
@@ -77,25 +82,6 @@ on:
 
 jobs:
   takt-review:
-    if: >
-      (
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.draft == false &&
-        github.event.sender.type != 'Bot'
-      ) ||
-      (
-        github.event_name == 'issue_comment' &&
-        github.event.issue.pull_request != null &&
-        github.event.issue.state == 'open' &&
-        github.event.sender.type != 'Bot' &&
-        startsWith(github.event.comment.body, '@takt') &&
-        (
-          github.event.comment.author_association == 'OWNER' ||
-          github.event.comment.author_association == 'MEMBER' ||
-          github.event.comment.author_association == 'COLLABORATOR'
-        )
-      )
     uses: j5ik2o/ci/.github/workflows/takt-review.yml@v1
     permissions:
       contents: read
@@ -105,6 +91,7 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
       pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+      event_head_sha: ${{ github.event.pull_request.head.sha }}
       comment_body: ${{ github.event.comment.body }}
       workflow: review-takt-default
       provider: claude-sdk

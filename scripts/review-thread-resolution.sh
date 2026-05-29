@@ -5,9 +5,23 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 REQUIRED_CONTEXT="${REQUIRED_CONTEXT:-Check unresolved comments}"
 WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-1}"
 PUBLISH_STATUS="${PUBLISH_STATUS:-1}"
+SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
 EVENT_NAME="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
 PR_NUMBER="${PR_NUMBER:-}"
 RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}}"
+
+case "$WAIT_FOR_OTHER_CHECKS" in
+  false|False|FALSE) WAIT_FOR_OTHER_CHECKS=0 ;;
+  *) WAIT_FOR_OTHER_CHECKS=1 ;;
+esac
+case "$PUBLISH_STATUS" in
+  false|False|FALSE) PUBLISH_STATUS=0 ;;
+  *) PUBLISH_STATUS=1 ;;
+esac
+case "$SKIP_STATUS_FOR_DEPENDABOT" in
+  false|False|FALSE) SKIP_STATUS_FOR_DEPENDABOT=0 ;;
+  *) SKIP_STATUS_FOR_DEPENDABOT=1 ;;
+esac
 
 if [[ -z "$REPOSITORY" || "$REPOSITORY" != */* ]]; then
   echo "::error::REPOSITORY must be in owner/name form."
@@ -32,6 +46,42 @@ bool_is_true() {
     1|true|TRUE|yes|YES) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+resolve_pr_number() {
+  local explicit_pr_number="${PR_NUMBER:-}"
+
+  if [[ -n "$explicit_pr_number" && "$explicit_pr_number" != "null" ]]; then
+    printf '%s\n' "$explicit_pr_number"
+    return 0
+  fi
+
+  if [[ -z "${GITHUB_EVENT_PATH:-}" || ! -f "$GITHUB_EVENT_PATH" ]]; then
+    printf '\n'
+    return 0
+  fi
+
+  jq -r '
+    def url_number($url):
+      ($url // "" | split("/")[-1]);
+    if (.pull_request.number? // null) != null then
+      (.pull_request.number | tostring)
+    elif (.issue.pull_request? // null) != null and (.issue.number? // null) != null then
+      (.issue.number | tostring)
+    elif ((.review.pull_request_url? // "") | length) > 0 then
+      url_number(.review.pull_request_url)
+    elif ((.comment.pull_request_url? // "") | length) > 0 then
+      url_number(.comment.pull_request_url)
+    else
+      ""
+    end
+  ' "$GITHUB_EVENT_PATH"
+}
+
+event_is_non_pr_issue_comment() {
+  [[ "$EVENT_NAME" == "issue_comment" ]] || return 1
+  [[ -n "${GITHUB_EVENT_PATH:-}" && -f "$GITHUB_EVENT_PATH" ]] || return 1
+  jq -e '(.issue.pull_request? // null) == null' "$GITHUB_EVENT_PATH" >/dev/null
 }
 
 fetch_pr_metadata() {
@@ -413,10 +463,11 @@ fetch_top_level_comments() {
 
     page_comments="$(
       jq -c '.data.repository.pullRequest.reviews.nodes
-        | map(select((.body // "") != "" and .state != "DISMISSED"))
+        | map(select((.body // "") != "" and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")))
         | map({
             url,
             body,
+            state,
             createdAt: .submittedAt,
             updatedAt: (.updatedAt // .submittedAt),
             authorAssociation,
@@ -452,6 +503,18 @@ filter_unacknowledged_comments() {
           and (
             ($body | contains("<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"))
             or ($body | contains("<!-- This is an auto-generated comment by CodeRabbit for review status -->"))
+            or ($body | contains("<!-- walkthrough_start -->"))
+            or ($body | contains("<!-- pre_merge_checks_walkthrough_start -->"))
+            or ($body | contains("## Review limit reached"))
+            or ($body | contains("## Walkthrough"))
+          )
+        )
+        or (
+          $author == "renovate"
+          and (
+            ($body | contains("### Edited Notification"))
+            or ($body | contains("### Blocked Notification"))
+            or ($body | contains("### Edited/Blocked Notification"))
           )
         )
         or (
@@ -467,11 +530,15 @@ filter_unacknowledged_comments() {
           $author == "chatgpt-codex-connector"
           and ($body | contains("Codex Review"))
         );
+    def trusted_acknowledgement:
+      (report_author_login == "chatgpt-codex-connector")
+      and ((.body // "") | test("(?i)^\\s*(acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました)"));
     . as $comments
     | [
         $comments[]
         | select(
             (ignored_auto_report | not)
+            and (trusted_acknowledgement | not)
             and ((.author.login // "") != $pr_author)
             and (
               $pr_author_type != "Bot"
@@ -487,6 +554,7 @@ filter_unacknowledged_comments() {
             $comments[]
             | select(
                 (.author.login // "") == $pr_author
+                or trusted_acknowledgement
                 or (
                   $pr_author_type == "Bot"
                   and (
@@ -544,6 +612,7 @@ check_pr() {
   local unacknowledged
   local unacknowledged_count
   local summary
+  local can_publish_status=1
 
   if [[ -z "$pr_number" || ! "$pr_number" =~ ^[0-9]+$ ]]; then
     echo "::error::PR number must be numeric: $pr_number"
@@ -612,21 +681,95 @@ check_pr() {
 
   if [[ "$head_repository" != "$OWNER/$REPO" ]]; then
     echo "::notice::Skipping synthetic commit status for fork PR head ($head_repository)."
-    if [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
-      return 0
-    fi
-    echo "::error::$unresolved_count unresolved PR review thread(s) and $unacknowledged_count unacknowledged top-level PR comment(s) or review summary comment(s) remain on PR #$pr_number."
-    return 1
+    can_publish_status=0
+  elif bool_is_true "$SKIP_STATUS_FOR_DEPENDABOT" && [[ "$pr_author" == "dependabot[bot]" || "$pr_author" == "dependabot" ]]; then
+    echo "::notice::Skipping synthetic commit status for Dependabot PR author ($pr_author)."
+    can_publish_status=0
   fi
 
   if [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
-    publish_status "$head_ref_oid" success || return 1
+    if [[ "$can_publish_status" -eq 1 ]]; then
+      publish_status "$head_ref_oid" success || return 1
+    fi
     return 0
   fi
 
-  publish_status "$head_ref_oid" failure || return 1
+  if [[ "$can_publish_status" -eq 1 ]]; then
+    publish_status "$head_ref_oid" failure || return 1
+  fi
   echo "::error::$unresolved_count unresolved PR review thread(s) and $unacknowledged_count unacknowledged top-level PR comment(s) or review summary comment(s) remain on PR #$pr_number."
-  return 1
+  return 2
+}
+
+run_refresh_all() {
+  local pr_number
+  local pr_numbers=()
+  local overall=0
+  local result
+  local original_wait_for_other_checks="$WAIT_FOR_OTHER_CHECKS"
+
+  mapfile -t pr_numbers < <(list_open_prs)
+  if [[ "${#pr_numbers[@]}" -eq 0 ]]; then
+    echo "No open PRs targeting $BASE_BRANCH."
+    return 0
+  fi
+
+  WAIT_FOR_OTHER_CHECKS=0
+  for pr_number in "${pr_numbers[@]}"; do
+    set +e
+    check_pr "$pr_number"
+    result=$?
+    set -e
+    if [[ "$result" -eq 1 ]]; then
+      overall=1
+    elif [[ "$result" -eq 2 ]]; then
+      echo "::notice::PR #$pr_number still has unresolved review state; keeping this refresh-all workflow successful."
+    elif [[ "$result" -ne 0 ]]; then
+      echo "::error::Unexpected result while refreshing PR #$pr_number: $result"
+      overall=1
+    fi
+  done
+  WAIT_FOR_OTHER_CHECKS="$original_wait_for_other_checks"
+
+  return "$overall"
+}
+
+run_single_pr() {
+  local result
+
+  set +e
+  check_pr "$PR_NUMBER"
+  result=$?
+  set -e
+
+  if [[ "$result" -eq 2 ]]; then
+    return 1
+  fi
+  return "$result"
+}
+
+main() {
+  PR_NUMBER="$(resolve_pr_number)"
+
+  if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
+    if [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+      run_refresh_all
+      return $?
+    fi
+    if event_is_non_pr_issue_comment; then
+      echo "Skipping non-PR issue_comment event."
+      return 0
+    fi
+    echo "::error::Unable to resolve PR number from $EVENT_NAME event."
+    return 1
+  fi
+
+  if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+    echo "::error::PR number must be numeric: $PR_NUMBER"
+    return 1
+  fi
+
+  run_single_pr
 }
 
 list_open_prs() {
@@ -639,18 +782,4 @@ list_open_prs() {
     --jq '.[].number'
 }
 
-if [[ -z "$PR_NUMBER" ]]; then
-  mapfile -t pr_numbers < <(list_open_prs)
-  if [[ "${#pr_numbers[@]}" -eq 0 ]]; then
-    echo "No open PRs targeting $BASE_BRANCH."
-    exit 0
-  fi
-
-  overall=0
-  for pr_number in "${pr_numbers[@]}"; do
-    check_pr "$pr_number" || overall=1
-  done
-  exit "$overall"
-fi
-
-check_pr "$PR_NUMBER"
+main "$@"

@@ -612,19 +612,19 @@ check_pr() {
 
   if [[ "$head_repository" != "$OWNER/$REPO" ]]; then
     echo "::notice::Skipping synthetic commit status for fork PR head ($head_repository)."
-  elif [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
-    publish_status "$head_ref_oid" success || return 1
-    return 0
-  else
-    publish_status "$head_ref_oid" failure || return 1
+    if [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
+      return 0
+    fi
     echo "::error::$unresolved_count unresolved PR review thread(s) and $unacknowledged_count unacknowledged top-level PR comment(s) or review summary comment(s) remain on PR #$pr_number."
     return 1
   fi
 
   if [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
+    publish_status "$head_ref_oid" success || return 1
     return 0
   fi
 
+  publish_status "$head_ref_oid" failure || return 1
   echo "::error::$unresolved_count unresolved PR review thread(s) and $unacknowledged_count unacknowledged top-level PR comment(s) or review summary comment(s) remain on PR #$pr_number."
   return 1
 }

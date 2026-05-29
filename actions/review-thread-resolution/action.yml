@@ -1,0 +1,42 @@
+name: Review Thread Resolution
+description: Evaluate unresolved review threads and unacknowledged top-level PR comments.
+inputs:
+  pr_number:
+    description: PR number to refresh. Leave empty to refresh all open PRs for base_branch.
+    required: false
+    default: ""
+  repository:
+    description: GitHub repository in owner/name form.
+    required: false
+    default: ${{ github.repository }}
+  base_branch:
+    description: Base branch to evaluate.
+    required: false
+    default: main
+  required_context:
+    description: Commit status context published for branch protection.
+    required: false
+    default: Check unresolved comments
+  wait_for_other_checks:
+    description: Wait for other PR checks before evaluating review threads.
+    required: false
+    default: "true"
+  publish_status:
+    description: Publish the synthetic commit status on same-repository PR heads.
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Evaluate review-thread state
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+        REQUIRED_CONTEXT: ${{ inputs.required_context }}
+        WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks == 'false' && '0' || '1' }}
+        PUBLISH_STATUS: ${{ inputs.publish_status == 'false' && '0' || '1' }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: bash "$GITHUB_ACTION_PATH/../../scripts/review-thread-resolution.sh"

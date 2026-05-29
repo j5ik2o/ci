@@ -1,0 +1,42 @@
+name: TAKT Review Wrapper
+description: Run a caller repository TAKT review wrapper with normalized CI inputs.
+inputs:
+  wrapper_script:
+    description: Path to the caller repository TAKT wrapper script.
+    required: false
+    default: .github/scripts/takt-review-wrapper.mjs
+  pr_number:
+    description: Pull request number.
+    required: true
+  pr_head_sha:
+    description: Pull request head SHA.
+    required: true
+  comment_body:
+    description: Trigger comment body, if any.
+    required: false
+    default: ""
+  workflow:
+    description: TAKT workflow name.
+    required: false
+    default: review-takt-default
+  provider:
+    description: TAKT provider.
+    required: false
+    default: claude-sdk
+  model:
+    description: Model passed to the TAKT wrapper.
+    required: false
+    default: claude-sonnet-4-5-20250929
+runs:
+  using: composite
+  steps:
+    - name: Run TAKT review wrapper
+      shell: bash
+      env:
+        PR_NUMBER: ${{ inputs.pr_number }}
+        PR_HEAD_SHA: ${{ inputs.pr_head_sha }}
+        COMMENT_BODY: ${{ inputs.comment_body }}
+        TAKT_WORKFLOW: ${{ inputs.workflow }}
+        TAKT_PROVIDER: ${{ inputs.provider }}
+        TAKT_MODEL: ${{ inputs.model }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh" "${{ inputs.wrapper_script }}"

@@ -529,10 +529,6 @@ filter_unacknowledged_comments() {
         or (
           $author == "chatgpt-codex-connector"
           and ($body | contains("Codex Review"))
-        )
-        or (
-          $author == "renovate"
-          and ($body | startswith("### Edited/Blocked Notification"))
         );
     def trusted_acknowledgement:
       (report_author_login == "chatgpt-codex-connector")

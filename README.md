@@ -75,8 +75,9 @@ aggregate `CI Success` job can depend on it.
 ## TAKT Review
 
 The caller repository keeps the trigger policy. The shared workflow resolves and
-checks out same-repository, non-draft, non-Renovate PRs, then runs the caller
-repository wrapper script.
+checks out same-repository, non-draft, non-Renovate PRs, then runs the bundled
+default TAKT wrapper script. Set `wrapper_script` only when a caller repository
+needs a custom wrapper.
 
 ```yaml
 name: TAKT Review
@@ -103,7 +104,6 @@ jobs:
       workflow: review-takt-default
       provider: claude-sdk
       model: claude-sonnet-4-5-20250929
-      wrapper_script: .github/scripts/takt-review-wrapper.mjs
       ci_ref: v1
 ```
 

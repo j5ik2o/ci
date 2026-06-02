@@ -17,6 +17,6 @@ fi
 
 while IFS= read -r file; do
   bash -n "$file"
-done < <(find scripts actions -name '*.sh' | sort)
+done < <(find scripts actions tests -name '*.sh' | sort)
 
 echo "Workflow and shell validation passed."

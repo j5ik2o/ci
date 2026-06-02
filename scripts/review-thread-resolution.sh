@@ -149,11 +149,17 @@ fetch_pending_check_names() {
     --argjson status_response "$status_response" '
       def excluded_check_name:
         (.name // "") as $name
+        | ($name | split(" / ")[-1]) as $job_name
         | $name == $required_context
+          or $job_name == $required_context
           or $name == "Refresh review-thread state"
+          or $job_name == "Refresh review-thread state"
           or $name == "Evaluate CI review-thread gate"
+          or $job_name == "Evaluate CI review-thread gate"
           or $name == "Review Thread Resolution"
+          or $job_name == "Review Thread Resolution"
           or $name == "Review Thread Refresh"
+          or $job_name == "Review Thread Refresh"
           or $name == "CI Review Thread Gate";
       def current_workflow_run:
         ($current_run_id | length) > 0

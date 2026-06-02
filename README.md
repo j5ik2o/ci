@@ -62,8 +62,15 @@ jobs:
 ```
 
 For branch protection, prefer requiring the synthetic status context
-`Check unresolved comments`. The workflow job name is intentionally separate so
-cancelled workflow runs do not become the protected gate.
+`Check unresolved comments`. Event-driven refresh runs publish that context but
+do not fail the workflow job for unresolved review state, and concurrent refresh
+runs use per-run concurrency groups so GitHub Actions does not cancel older
+pending refresh jobs. This keeps the synthetic status as the only branch
+protection signal while avoiding cancelled refresh check-runs on the PR head.
+
+CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
+unresolved review state still fails the reusable workflow job so a caller's
+aggregate `CI Success` job can depend on it.
 
 ## TAKT Review
 

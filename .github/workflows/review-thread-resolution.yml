@@ -47,8 +47,8 @@ permissions:
   statuses: write
 
 concurrency:
-  group: review-thread-resolution-${{ inputs.wait_for_other_checks == 'false' && 'ci-' || 'event-' }}${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || 'refresh-all' }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && inputs.wait_for_other_checks != 'false' }}
+  group: ${{ inputs.wait_for_other_checks == 'false' && format('review-thread-resolution-ci-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id) || format('review-thread-resolution-event-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 jobs:
   unresolved-comments:

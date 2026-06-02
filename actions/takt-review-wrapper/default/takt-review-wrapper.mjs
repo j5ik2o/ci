@@ -3,7 +3,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { firstMeaningfulLine, isDuplicateComment, normalizeBody, stripMarkdown } from "./takt-review-wrapper-helpers.mjs";
+import { firstMeaningfulLine, isDuplicateComment, normalizeBody, stripMarkdown, unescapeQuotedDiffPath } from "./takt-review-wrapper-helpers.mjs";
 
 const env = process.env;
 const repo = requiredEnv("GITHUB_REPOSITORY");
@@ -479,16 +479,6 @@ function parseDiffFileHeader(line) {
     return normalizeDiffPath(unescapeQuotedDiffPath(quoted[1]));
   }
   return undefined;
-}
-
-function unescapeQuotedDiffPath(path) {
-  const decoded = path
-    .replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)))
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, "\\")
-    .replace(/\\t/g, "\t")
-    .replace(/\\n/g, "\n");
-  return Buffer.from(decoded, "binary").toString("utf8");
 }
 
 function normalizeDiffPath(path) {

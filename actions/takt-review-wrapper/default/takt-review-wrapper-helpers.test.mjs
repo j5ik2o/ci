@@ -12,6 +12,7 @@ import {
   normalizeBody,
   sourceLabelSummary,
   stripMarkdown,
+  unescapeQuotedDiffPath,
 } from "./takt-review-wrapper-helpers.mjs";
 
 test("stripMarkdown removes simple markdown markers and handles empty values", () => {
@@ -120,4 +121,12 @@ test("normalizeBody and isTaktWrapperComment handle wrapper body text", () => {
   assert.equal(normalizeBody("**Finding**\n\n`code`"), "Finding code");
   assert.equal(isTaktWrapperComment("body\n<!-- takt-review-wrapper -->"), true);
   assert.equal(isTaktWrapperComment("body"), false);
+});
+
+test("unescapeQuotedDiffPath decodes each git quote escape once", () => {
+  assert.equal(unescapeQuotedDiffPath(String.raw`dir/path\040with\040space.rs`), "dir/path with space.rs");
+  assert.equal(unescapeQuotedDiffPath(String.raw`dir/quote\"name.rs`), 'dir/quote"name.rs');
+  assert.equal(unescapeQuotedDiffPath(String.raw`dir/tab\tname.rs`), "dir/tab\tname.rs");
+  assert.equal(unescapeQuotedDiffPath(String.raw`dir/backslash\\tname.rs`), String.raw`dir/backslash\tname.rs`);
+  assert.equal(unescapeQuotedDiffPath(String.raw`dir/backslash\\nname.rs`), String.raw`dir/backslash\nname.rs`);
 });

@@ -110,3 +110,24 @@ export function isTaktWrapperComment(value) {
 export function normalizeBody(value) {
   return stripMarkdown(value || "").replace(/\s+/g, " ").trim();
 }
+
+export function unescapeQuotedDiffPath(path) {
+  const decoded = String(path || "").replace(/\\([0-7]{3}|["\\tn])/g, (_, escape) => {
+    if (/^[0-7]{3}$/.test(escape)) {
+      return String.fromCharCode(Number.parseInt(escape, 8));
+    }
+    switch (escape) {
+      case '"':
+        return '"';
+      case "\\":
+        return "\\";
+      case "t":
+        return "\t";
+      case "n":
+        return "\n";
+      default:
+        return `\\${escape}`;
+    }
+  });
+  return Buffer.from(decoded, "binary").toString("utf8");
+}

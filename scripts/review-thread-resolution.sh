@@ -743,6 +743,10 @@ run_single_pr() {
   set -e
 
   if [[ "$result" -eq 2 ]]; then
+    if bool_is_true "$WAIT_FOR_OTHER_CHECKS"; then
+      echo "::notice::PR #$PR_NUMBER still has unresolved review state; published '$REQUIRED_CONTEXT' and keeping this refresh workflow successful."
+      return 0
+    fi
     return 1
   fi
   return "$result"

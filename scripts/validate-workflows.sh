@@ -19,4 +19,6 @@ while IFS= read -r file; do
   bash -n "$file"
 done < <(find scripts actions -name '*.sh' | sort)
 
+node --test --test-reporter=spec actions/takt-review-wrapper/default/*.test.mjs
+
 echo "Workflow and shell validation passed."

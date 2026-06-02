@@ -1,6 +1,7 @@
 set -euo pipefail
 
-wrapper_script="${1:-.github/scripts/takt-review-wrapper.mjs}"
+action_path="${GITHUB_ACTION_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+wrapper_script="${1:-$action_path/default/takt-review-wrapper.mjs}"
 
 case "${TAKT_NON_BLOCKING:-true}" in
   false|False|FALSE) non_blocking=0 ;;

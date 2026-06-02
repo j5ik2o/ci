@@ -1,10 +1,10 @@
 name: TAKT Review Wrapper
-description: Run a caller repository TAKT review wrapper with normalized CI inputs.
+description: Run a TAKT review wrapper with normalized CI inputs.
 inputs:
   wrapper_script:
-    description: Path to the caller repository TAKT wrapper script.
+    description: Path to a caller repository TAKT wrapper script. Leave empty to use the bundled default wrapper.
     required: false
-    default: .github/scripts/takt-review-wrapper.mjs
+    default: ""
   pr_number:
     description: Pull request number.
     required: true

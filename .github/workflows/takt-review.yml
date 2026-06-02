@@ -34,10 +34,10 @@ on:
         type: string
         default: claude-sonnet-4-5-20250929
       wrapper_script:
-        description: Path to the caller repository TAKT wrapper script.
+        description: Path to a caller repository TAKT wrapper script. Leave empty to use the bundled default wrapper.
         required: false
         type: string
-        default: .github/scripts/takt-review-wrapper.mjs
+        default: ""
       non_blocking:
         description: Treat TAKT runtime failures as warnings while keeping setup defects failing.
         required: false

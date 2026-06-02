@@ -160,7 +160,8 @@ fetch_pending_check_names() {
           or $job_name == "Review Thread Resolution"
           or $name == "Review Thread Refresh"
           or $job_name == "Review Thread Refresh"
-          or $name == "CI Review Thread Gate";
+          or $name == "CI Review Thread Gate"
+          or $job_name == "CI Review Thread Gate";
       def current_workflow_run:
         ($current_run_id | length) > 0
         and ((.details_url // "") | contains("/actions/runs/" + $current_run_id + "/"));

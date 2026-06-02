@@ -47,7 +47,7 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/check-runs"* ]]; then
     echo "check-runs endpoint should not be called" >&2
     exit 1
   fi
-  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"Unit Test","status":"completed","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
+  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"in_progress","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Unit Test","status":"completed","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
   exit 0
 fi
 
@@ -67,8 +67,15 @@ exit 1
 EOF
 chmod +x "$tmpdir/bin/gh"
 
+cat > "$tmpdir/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_SLEEP_LOG"
+EOF
+chmod +x "$tmpdir/bin/sleep"
+
 run_script() {
   GH_CALL_LOG="$tmpdir/calls.log" \
+  GH_SLEEP_LOG="$tmpdir/sleeps.log" \
   PATH="$tmpdir/bin:$PATH" \
   REPOSITORY="j5ik2o/g2g" \
   BASE_BRANCH="main" \
@@ -83,16 +90,26 @@ run_script() {
 }
 
 : > "$tmpdir/calls.log"
-run_script "pull_request_review" "true"
+: > "$tmpdir/sleeps.log"
+run_script "workflow_dispatch" "true"
 if grep -q '^pr view' "$tmpdir/calls.log"; then
   echo "gh pr view must not be used for check waiting." >&2
   exit 1
 fi
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "excluded review-thread checks must not trigger waiting." >&2
+  exit 1
+fi
 
 : > "$tmpdir/calls.log"
+: > "$tmpdir/sleeps.log"
 GH_FAIL_CHECK_RUNS=1 run_script "workflow_dispatch" "false"
 if grep -q 'check-runs' "$tmpdir/calls.log"; then
   echo "wait_for_other_checks=false must not fetch check-runs." >&2
+  exit 1
+fi
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "wait_for_other_checks=false must not wait." >&2
   exit 1
 fi
 

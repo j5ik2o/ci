@@ -72,6 +72,30 @@ CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
 unresolved review state still fails the reusable workflow job so a caller's
 aggregate `CI Success` job can depend on it.
 
+Top-level bot report comments and review summaries can be excluded from the
+acknowledgement gate with newline-separated literal substrings. The default
+`ignored_auto_report_patterns` covers CodeRabbit, Renovate notifications,
+Codecov reports, Cursor Bugbot summaries, and Devin Review summaries. Add a
+stable HTML marker or unique text with `extra_ignored_auto_report_patterns` when
+a caller adopts another review bot:
+
+```yaml
+with:
+  extra_ignored_auto_report_patterns: |
+    <!-- another-review-bot-summary -->
+```
+
+For generic text that could appear in a human review comment, use
+`extra_ignored_auto_report_author_patterns` instead. Each line is
+`author-login<TAB>literal-substring`, and bot logins are normalized without the
+trailing `[bot]` suffix:
+
+```yaml
+with:
+  extra_ignored_auto_report_author_patterns: |
+    another-review-bot	## Automated Review Summary
+```
+
 ## TAKT Review
 
 The caller repository keeps the trigger policy. The shared workflow resolves and

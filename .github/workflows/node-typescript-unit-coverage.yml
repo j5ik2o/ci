@@ -1,0 +1,262 @@
+name: Node TypeScript Unit Coverage
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: Node.js version used for coverage installation, build, and measurement.
+        required: false
+        type: string
+        default: "24"
+      pnpm_version:
+        description: pnpm version used for coverage installation, build, and measurement.
+        required: false
+        type: string
+        default: 9.15.9
+      base_branch:
+        description: Base branch used for PR coverage comparison. Defaults to the pull request base branch.
+        required: false
+        type: string
+        default: ""
+      manifest_path:
+        description: Consumer repository coverage manifest path.
+        required: false
+        type: string
+        default: unit-coverage.manifest.json
+      build_command:
+        description: Command that builds the consumer repository before coverage measurement.
+        required: false
+        type: string
+        default: pnpm -r build
+      install_command:
+        description: Command that installs consumer repository dependencies.
+        required: false
+        type: string
+        default: pnpm install --frozen-lockfile
+      coverage_plan_command:
+        description: Command that prepares the coverage measurement plan.
+        required: false
+        type: string
+        default: pnpm coverage:plan
+      coverage_measure_command:
+        description: Command that measures unit coverage for the current checkout.
+        required: false
+        type: string
+        default: pnpm coverage:measure
+      coverage_evaluate_command:
+        description: Command that evaluates head coverage and optional base coverage.
+        required: false
+        type: string
+        default: pnpm coverage:evaluate
+      artifact_name:
+        description: Name of the uploaded coverage report artifact.
+        required: false
+        type: string
+        default: unit-coverage-reports
+
+permissions:
+  contents: read
+
+jobs:
+  unit-coverage:
+    name: Unit Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BASE_WORKTREE: ${{ github.workspace }}/../unit-coverage-base
+      UNIT_COVERAGE_MANIFEST_PATH: ${{ inputs.manifest_path }}
+      UNIT_COVERAGE_PLAN_PATH: ${{ github.workspace }}/.coverage/unit/measurement-plan.json
+      UNIT_COVERAGE_SUMMARY_PATH: ${{ github.workspace }}/.coverage/unit/summary.md
+      UNIT_COVERAGE_HEAD_OUTPUT_DIR: ${{ github.workspace }}/.coverage/unit/head
+      UNIT_COVERAGE_BASE_OUTPUT_DIR: ${{ github.workspace }}/.coverage/unit/base
+    steps:
+      - name: Resolve coverage context
+        id: coverage-context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BASE_BRANCH: ${{ inputs.base_branch }}
+        run: |
+          set -euo pipefail
+
+          is_pr=false
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target)
+              is_pr=true
+              ;;
+          esac
+
+          base_branch="$INPUT_BASE_BRANCH"
+          if [[ -z "$base_branch" && "$is_pr" == "true" ]]; then
+            base_branch="$(jq -r '.pull_request.base.ref? // ""' "$GITHUB_EVENT_PATH")"
+          fi
+          if [[ "$is_pr" == "true" && -z "$base_branch" ]]; then
+            echo "::error::base_branch is required for pull request coverage comparison."
+            exit 1
+          fi
+
+          {
+            echo "is_pr=$is_pr"
+            echo "base_branch=$base_branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout head
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install head dependencies
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+        run: |
+          set -euo pipefail
+          bash -euo pipefail -c "$INSTALL_COMMAND"
+
+      - name: Build head
+        env:
+          BUILD_COMMAND: ${{ inputs.build_command }}
+        run: |
+          set -euo pipefail
+          bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Prepare base worktree
+        if: steps.coverage-context.outputs.is_pr == 'true'
+        env:
+          BASE_BRANCH: ${{ steps.coverage-context.outputs.base_branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git remote add coverage-base "https://github.com/$REPOSITORY.git" 2>/dev/null \
+            || git remote set-url coverage-base "https://github.com/$REPOSITORY.git"
+          git fetch --no-tags --depth=1 coverage-base "+refs/heads/$BASE_BRANCH:refs/remotes/coverage-base/$BASE_BRANCH"
+          git worktree add --detach "$BASE_WORKTREE" "refs/remotes/coverage-base/$BASE_BRANCH"
+
+      - name: Install base dependencies
+        if: steps.coverage-context.outputs.is_pr == 'true'
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+        working-directory: ${{ env.BASE_WORKTREE }}
+        run: |
+          set -euo pipefail
+          bash -euo pipefail -c "$INSTALL_COMMAND"
+
+      - name: Build base
+        if: steps.coverage-context.outputs.is_pr == 'true'
+        env:
+          BUILD_COMMAND: ${{ inputs.build_command }}
+        working-directory: ${{ env.BASE_WORKTREE }}
+        run: |
+          set -euo pipefail
+          bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Plan coverage measurement
+        env:
+          COVERAGE_PLAN_COMMAND: ${{ inputs.coverage_plan_command }}
+          UNIT_COVERAGE_IS_PR: ${{ steps.coverage-context.outputs.is_pr }}
+          UNIT_COVERAGE_BASE_BRANCH: ${{ steps.coverage-context.outputs.base_branch }}
+          UNIT_COVERAGE_PHASE: plan
+          UNIT_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/.coverage/unit
+          UNIT_COVERAGE_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_HEAD_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_BASE_WORKSPACE: ${{ env.BASE_WORKTREE }}
+        run: |
+          set -euo pipefail
+          mkdir -p .coverage/unit
+          bash -euo pipefail -c "$COVERAGE_PLAN_COMMAND"
+
+      - name: Measure head coverage
+        env:
+          COVERAGE_MEASURE_COMMAND: ${{ inputs.coverage_measure_command }}
+          UNIT_COVERAGE_IS_PR: ${{ steps.coverage-context.outputs.is_pr }}
+          UNIT_COVERAGE_BASE_BRANCH: ${{ steps.coverage-context.outputs.base_branch }}
+          UNIT_COVERAGE_PHASE: head
+          UNIT_COVERAGE_OUTPUT_DIR: ${{ env.UNIT_COVERAGE_HEAD_OUTPUT_DIR }}
+          UNIT_COVERAGE_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_TARGET_WORKSPACE: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$UNIT_COVERAGE_OUTPUT_DIR"
+          bash -euo pipefail -c "$COVERAGE_MEASURE_COMMAND"
+
+      - name: Measure base coverage
+        if: steps.coverage-context.outputs.is_pr == 'true'
+        env:
+          COVERAGE_MEASURE_COMMAND: ${{ inputs.coverage_measure_command }}
+          UNIT_COVERAGE_IS_PR: ${{ steps.coverage-context.outputs.is_pr }}
+          UNIT_COVERAGE_BASE_BRANCH: ${{ steps.coverage-context.outputs.base_branch }}
+          UNIT_COVERAGE_PHASE: base
+          UNIT_COVERAGE_OUTPUT_DIR: ${{ env.UNIT_COVERAGE_BASE_OUTPUT_DIR }}
+          UNIT_COVERAGE_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_HEAD_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_BASE_WORKSPACE: ${{ env.BASE_WORKTREE }}
+          UNIT_COVERAGE_TARGET_WORKSPACE: ${{ env.BASE_WORKTREE }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$UNIT_COVERAGE_OUTPUT_DIR"
+          bash -euo pipefail -c "$COVERAGE_MEASURE_COMMAND"
+          if [[ -d "$BASE_WORKTREE/.coverage/unit" ]]; then
+            mkdir -p "$UNIT_COVERAGE_BASE_OUTPUT_DIR"
+            cp -a "$BASE_WORKTREE/.coverage/unit/." "$UNIT_COVERAGE_BASE_OUTPUT_DIR/"
+          fi
+
+      - name: Evaluate coverage
+        id: evaluate
+        continue-on-error: true
+        env:
+          COVERAGE_EVALUATE_COMMAND: ${{ inputs.coverage_evaluate_command }}
+          UNIT_COVERAGE_IS_PR: ${{ steps.coverage-context.outputs.is_pr }}
+          UNIT_COVERAGE_BASE_BRANCH: ${{ steps.coverage-context.outputs.base_branch }}
+          UNIT_COVERAGE_PHASE: evaluate
+          UNIT_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/.coverage/unit
+          UNIT_COVERAGE_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_BASE_WORKSPACE: ${{ env.BASE_WORKTREE }}
+        run: |
+          set -euo pipefail
+
+          status=0
+          bash -euo pipefail -c "$COVERAGE_EVALUATE_COMMAND" || status=$?
+
+          {
+            echo "## Unit Coverage Gate"
+            echo
+            if [[ -f "$UNIT_COVERAGE_SUMMARY_PATH" ]]; then
+              cat "$UNIT_COVERAGE_SUMMARY_PATH"
+            else
+              echo "Coverage evaluation did not write $UNIT_COVERAGE_SUMMARY_PATH."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            .coverage/unit/**/*.html
+            .coverage/unit/**/*.json
+            .coverage/unit/**/*.lcov
+            .coverage/unit/**/lcov.info
+            .coverage/unit/**/*.md
+            .coverage/unit/**/summary*
+          if-no-files-found: warn
+
+      - name: Fail on coverage evaluation failure
+        if: steps.evaluate.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          echo "::error::Coverage evaluation failed. See the Unit Coverage Gate summary and uploaded reports."
+          exit 1

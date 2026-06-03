@@ -131,6 +131,71 @@ jobs:
       ci_ref: v1
 ```
 
+## Node TypeScript Unit Coverage
+
+Use this workflow for repo-native unit coverage gates in Node.js + TypeScript
+repositories. The shared workflow owns CI orchestration only: checkout, Node and
+pnpm setup, dependency install, build, head/base measurement, evaluation summary,
+and artifact upload. Coverage policy, target selection, and report generation
+stay in the caller repository through `unit-coverage.manifest.json` and the
+caller scripts.
+
+On pull request events, the workflow creates a base worktree from the PR base
+branch, installs and builds dependencies in both head and base, measures both
+coverage states, and then runs the caller evaluation command. On non-PR events,
+only head coverage is measured.
+
+The base measurement command runs from the head checkout with
+`UNIT_COVERAGE_TARGET_WORKSPACE` pointing at the base worktree. That keeps new
+coverage tooling in the head branch and avoids requiring the base branch to
+already contain the same coverage scripts.
+
+```yaml
+name: Unit Coverage
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+
+jobs:
+  unit-coverage:
+    uses: j5ik2o/ci/.github/workflows/node-typescript-unit-coverage.yml@v1
+    permissions:
+      contents: read
+    with:
+      node_version: "24"
+      pnpm_version: 9.15.9
+      base_branch: ${{ github.event.pull_request.base.ref || 'main' }}
+      manifest_path: unit-coverage.manifest.json
+      build_command: pnpm -r build
+      install_command: pnpm install --frozen-lockfile
+      coverage_plan_command: pnpm coverage:plan
+      coverage_measure_command: pnpm coverage:measure
+      coverage_evaluate_command: pnpm coverage:evaluate
+      artifact_name: unit-coverage-reports
+```
+
+Caller scripts can use these environment variables to avoid hard-coding shared
+CI paths:
+
+- `UNIT_COVERAGE_MANIFEST_PATH`: manifest path from the workflow input.
+- `UNIT_COVERAGE_PLAN_PATH`: expected measurement plan path.
+- `UNIT_COVERAGE_SUMMARY_PATH`: Markdown summary appended to
+  `$GITHUB_STEP_SUMMARY` after evaluation, even when evaluation fails.
+- `UNIT_COVERAGE_PHASE`: one of `plan`, `head`, `base`, or `evaluate`.
+- `UNIT_COVERAGE_OUTPUT_DIR`: phase-specific output directory.
+- `UNIT_COVERAGE_WORKSPACE`: workspace where the caller script is running.
+- `UNIT_COVERAGE_TARGET_WORKSPACE`: workspace that should be measured for the
+  current `head` or `base` phase.
+- `UNIT_COVERAGE_HEAD_OUTPUT_DIR`: head coverage report directory.
+- `UNIT_COVERAGE_BASE_OUTPUT_DIR`: base coverage report directory.
+- `UNIT_COVERAGE_HEAD_WORKSPACE`: head checkout path.
+- `UNIT_COVERAGE_BASE_WORKSPACE`: base worktree path for PR events.
+- `UNIT_COVERAGE_IS_PR`: `true` for pull request events.
+- `UNIT_COVERAGE_BASE_BRANCH`: branch used for base coverage comparison.
+
 ## Validation
 
 ```bash

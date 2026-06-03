@@ -33,6 +33,28 @@ on:
         required: false
         type: string
         default: "true"
+      ignored_auto_report_patterns:
+        description: Newline-separated literal substrings for top-level bot report comments or review summaries that should not require acknowledgement.
+        required: false
+        type: string
+        default: |
+          <!-- This is an auto-generated comment: summarize by coderabbit.ai -->
+          <!-- This is an auto-generated comment by CodeRabbit for review status -->
+          <!-- walkthrough_start -->
+          <!-- pre_merge_checks_walkthrough_start -->
+          ## Review limit reached
+          ## Walkthrough
+          ### Edited Notification
+          ### Blocked Notification
+          ### Edited/Blocked Notification
+          ## [Codecov](
+          <!-- BUGBOT_REVIEW -->
+          <!-- devin-review-badge-begin -->
+      extra_ignored_auto_report_patterns:
+        description: Additional newline-separated literal substrings appended to ignored_auto_report_patterns.
+        required: false
+        type: string
+        default: ""
       ci_ref:
         description: Ref of j5ik2o/ci to check out for shared scripts. Pin this to the same tag as the reusable workflow.
         required: false
@@ -74,6 +96,8 @@ jobs:
           wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
           publish_status: ${{ inputs.publish_status }}
           skip_status_for_dependabot: ${{ inputs.skip_status_for_dependabot }}
+          ignored_auto_report_patterns: ${{ inputs.ignored_auto_report_patterns }}
+          extra_ignored_auto_report_patterns: ${{ inputs.extra_ignored_auto_report_patterns }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}

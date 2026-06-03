@@ -9,6 +9,12 @@ SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
 EVENT_NAME="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
 PR_NUMBER="${PR_NUMBER:-}"
 RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}}"
+DEFAULT_IGNORED_AUTO_REPORT_PATTERNS=$'<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment by CodeRabbit for review status -->\n<!-- walkthrough_start -->\n<!-- pre_merge_checks_walkthrough_start -->\n## Review limit reached\n## Walkthrough\n### Edited Notification\n### Blocked Notification\n### Edited/Blocked Notification\n## [Codecov](\n<!-- BUGBOT_REVIEW -->\n<!-- devin-review-badge-begin -->'
+IGNORED_AUTO_REPORT_PATTERNS="${IGNORED_AUTO_REPORT_PATTERNS:-$DEFAULT_IGNORED_AUTO_REPORT_PATTERNS}"
+EXTRA_IGNORED_AUTO_REPORT_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_PATTERNS:-}"
+if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_PATTERNS" ]]; then
+  IGNORED_AUTO_REPORT_PATTERNS="${IGNORED_AUTO_REPORT_PATTERNS}"$'\n'"${EXTRA_IGNORED_AUTO_REPORT_PATTERNS}"
+fi
 
 case "$WAIT_FOR_OTHER_CHECKS" in
   false|False|FALSE) WAIT_FOR_OTHER_CHECKS=0 ;;
@@ -587,40 +593,22 @@ filter_unacknowledged_comments() {
   local pr_author="$2"
   local pr_author_type="$3"
 
-  jq -c --arg pr_author "$pr_author" --arg pr_author_type "$pr_author_type" '
+  jq -c \
+    --arg pr_author "$pr_author" \
+    --arg pr_author_type "$pr_author_type" \
+    --arg ignored_auto_report_patterns "$IGNORED_AUTO_REPORT_PATTERNS" '
     def report_author_login:
       (.author.login // "") | sub("\\[bot\\]$"; "");
+    def ignored_auto_report_pattern_list:
+      $ignored_auto_report_patterns
+      | split("\n")
+      | map(select(length > 0));
+    def body_matches_ignored_auto_report_pattern($body):
+      any(ignored_auto_report_pattern_list[]; $body | contains(.));
     def ignored_auto_report:
       report_author_login as $author
       | (.body // "") as $body
-      | (
-          $author == "coderabbitai"
-          and (
-            ($body | contains("<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"))
-            or ($body | contains("<!-- This is an auto-generated comment by CodeRabbit for review status -->"))
-            or ($body | contains("<!-- walkthrough_start -->"))
-            or ($body | contains("<!-- pre_merge_checks_walkthrough_start -->"))
-            or ($body | contains("## Review limit reached"))
-            or ($body | contains("## Walkthrough"))
-          )
-        )
-        or (
-          $author == "renovate"
-          and (
-            ($body | contains("### Edited Notification"))
-            or ($body | contains("### Blocked Notification"))
-            or ($body | contains("### Edited/Blocked Notification"))
-          )
-        )
-        or (
-          $author == "codecov"
-          and ($body | startswith("## [Codecov]("))
-          and ($body | contains(" Report"))
-        )
-        or (
-          $author == "cursor"
-          and ($body | contains("<!-- BUGBOT_REVIEW -->"))
-        )
+      | body_matches_ignored_auto_report_pattern($body)
         or (
           $author == "chatgpt-codex-connector"
           and ($body | contains("Codex Review"))

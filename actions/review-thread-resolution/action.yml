@@ -29,6 +29,26 @@ inputs:
     description: Skip synthetic commit status publication for Dependabot PR authors.
     required: false
     default: "true"
+  ignored_auto_report_patterns:
+    description: Newline-separated literal substrings for top-level bot report comments or review summaries that should not require acknowledgement.
+    required: false
+    default: |
+      <!-- This is an auto-generated comment: summarize by coderabbit.ai -->
+      <!-- This is an auto-generated comment by CodeRabbit for review status -->
+      <!-- walkthrough_start -->
+      <!-- pre_merge_checks_walkthrough_start -->
+      ## Review limit reached
+      ## Walkthrough
+      ### Edited Notification
+      ### Blocked Notification
+      ### Edited/Blocked Notification
+      ## [Codecov](
+      <!-- BUGBOT_REVIEW -->
+      <!-- devin-review-badge-begin -->
+  extra_ignored_auto_report_patterns:
+    description: Additional newline-separated literal substrings appended to ignored_auto_report_patterns.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -43,5 +63,7 @@ runs:
         WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks }}
         PUBLISH_STATUS: ${{ inputs.publish_status }}
         SKIP_STATUS_FOR_DEPENDABOT: ${{ inputs.skip_status_for_dependabot }}
+        IGNORED_AUTO_REPORT_PATTERNS: ${{ inputs.ignored_auto_report_patterns }}
+        EXTRA_IGNORED_AUTO_REPORT_PATTERNS: ${{ inputs.extra_ignored_auto_report_patterns }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: bash "$GITHUB_ACTION_PATH/../../scripts/review-thread-resolution.sh"

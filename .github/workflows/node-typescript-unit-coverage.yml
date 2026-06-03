@@ -184,6 +184,8 @@ jobs:
           UNIT_COVERAGE_PHASE: head
           UNIT_COVERAGE_OUTPUT_DIR: ${{ env.UNIT_COVERAGE_HEAD_OUTPUT_DIR }}
           UNIT_COVERAGE_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_HEAD_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_BASE_WORKSPACE: ${{ env.BASE_WORKTREE }}
           UNIT_COVERAGE_TARGET_WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -207,8 +209,9 @@ jobs:
           mkdir -p "$UNIT_COVERAGE_OUTPUT_DIR"
           bash -euo pipefail -c "$COVERAGE_MEASURE_COMMAND"
           if [[ -d "$BASE_WORKTREE/.coverage/unit" ]]; then
-            mkdir -p "$UNIT_COVERAGE_BASE_OUTPUT_DIR"
-            cp -a "$BASE_WORKTREE/.coverage/unit/." "$UNIT_COVERAGE_BASE_OUTPUT_DIR/"
+            legacy_output_dir="$UNIT_COVERAGE_BASE_OUTPUT_DIR/from-base-worktree"
+            mkdir -p "$legacy_output_dir"
+            cp -a "$BASE_WORKTREE/.coverage/unit/." "$legacy_output_dir/"
           fi
 
       - name: Evaluate coverage

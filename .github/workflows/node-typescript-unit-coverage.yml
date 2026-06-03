@@ -221,6 +221,7 @@ jobs:
           UNIT_COVERAGE_PHASE: evaluate
           UNIT_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/.coverage/unit
           UNIT_COVERAGE_WORKSPACE: ${{ github.workspace }}
+          UNIT_COVERAGE_HEAD_WORKSPACE: ${{ github.workspace }}
           UNIT_COVERAGE_BASE_WORKSPACE: ${{ env.BASE_WORKTREE }}
         run: |
           set -euo pipefail

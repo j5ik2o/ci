@@ -9,11 +9,17 @@ SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
 EVENT_NAME="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
 PR_NUMBER="${PR_NUMBER:-}"
 RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}}"
-DEFAULT_IGNORED_AUTO_REPORT_PATTERNS=$'<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment by CodeRabbit for review status -->\n<!-- walkthrough_start -->\n<!-- pre_merge_checks_walkthrough_start -->\n## Review limit reached\n## Walkthrough\n### Edited Notification\n### Blocked Notification\n### Edited/Blocked Notification\n## [Codecov](\n<!-- BUGBOT_REVIEW -->\n<!-- devin-review-badge-begin -->'
+DEFAULT_IGNORED_AUTO_REPORT_PATTERNS=$'<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment by CodeRabbit for review status -->\n<!-- walkthrough_start -->\n<!-- pre_merge_checks_walkthrough_start -->\n<!-- BUGBOT_REVIEW -->\n<!-- devin-review-badge-begin -->'
+DEFAULT_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS=$'coderabbitai\t## Review limit reached\ncoderabbitai\t## Walkthrough\nrenovate\t### Edited Notification\nrenovate\t### Blocked Notification\nrenovate\t### Edited/Blocked Notification\ncodecov\t## [Codecov](\nchatgpt-codex-connector\tCodex Review'
 IGNORED_AUTO_REPORT_PATTERNS="${IGNORED_AUTO_REPORT_PATTERNS:-$DEFAULT_IGNORED_AUTO_REPORT_PATTERNS}"
 EXTRA_IGNORED_AUTO_REPORT_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_PATTERNS:-}"
 if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_PATTERNS" ]]; then
   IGNORED_AUTO_REPORT_PATTERNS="${IGNORED_AUTO_REPORT_PATTERNS}"$'\n'"${EXTRA_IGNORED_AUTO_REPORT_PATTERNS}"
+fi
+IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${IGNORED_AUTO_REPORT_AUTHOR_PATTERNS:-$DEFAULT_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"
+EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS:-}"
+if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" ]]; then
+  IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"$'\n'"${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"
 fi
 
 case "$WAIT_FOR_OTHER_CHECKS" in
@@ -596,23 +602,31 @@ filter_unacknowledged_comments() {
   jq -c \
     --arg pr_author "$pr_author" \
     --arg pr_author_type "$pr_author_type" \
-    --arg ignored_auto_report_patterns "$IGNORED_AUTO_REPORT_PATTERNS" '
+    --arg ignored_auto_report_patterns "$IGNORED_AUTO_REPORT_PATTERNS" \
+    --arg ignored_auto_report_author_patterns "$IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" '
     def report_author_login:
       (.author.login // "") | sub("\\[bot\\]$"; "");
     def ignored_auto_report_pattern_list:
       $ignored_auto_report_patterns
       | split("\n")
       | map(select(length > 0));
+    def ignored_auto_report_author_pattern_list:
+      $ignored_auto_report_author_patterns
+      | split("\n")
+      | map(select(length > 0))
+      | map(split("\t") as $parts | select($parts | length >= 2) | {
+          author: $parts[0],
+          pattern: ($parts[1:] | join("\t"))
+        });
     def body_matches_ignored_auto_report_pattern($body):
-      any(ignored_auto_report_pattern_list[]; $body | contains(.));
+      any(ignored_auto_report_pattern_list[]; . as $pattern | $body | contains($pattern));
+    def body_matches_ignored_auto_report_author_pattern($author; $body):
+      any(ignored_auto_report_author_pattern_list[]; . as $entry | $entry.author == $author and ($body | contains($entry.pattern)));
     def ignored_auto_report:
       report_author_login as $author
       | (.body // "") as $body
       | body_matches_ignored_auto_report_pattern($body)
-        or (
-          $author == "chatgpt-codex-connector"
-          and ($body | contains("Codex Review"))
-        );
+        or body_matches_ignored_auto_report_author_pattern($author; $body);
     def trusted_acknowledgement:
       (report_author_login == "chatgpt-codex-connector")
       and ((.body // "") | test("(?i)^\\s*(acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました)"));

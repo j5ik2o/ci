@@ -85,6 +85,17 @@ with:
     <!-- another-review-bot-summary -->
 ```
 
+For generic text that could appear in a human review comment, use
+`extra_ignored_auto_report_author_patterns` instead. Each line is
+`author-login<TAB>literal-substring`, and bot logins are normalized without the
+trailing `[bot]` suffix:
+
+```yaml
+with:
+  extra_ignored_auto_report_author_patterns: |
+    another-review-bot	## Automated Review Summary
+```
+
 ## TAKT Review
 
 The caller repository keeps the trigger policy. The shared workflow resolves and

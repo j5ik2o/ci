@@ -17,7 +17,7 @@ fi
 
 while IFS= read -r file; do
   bash -n "$file"
-done < <(find scripts actions -name '*.sh' | sort)
+done < <(find scripts actions tests -name '*.sh' | sort)
 
 node --test --test-reporter=spec actions/takt-review-wrapper/default/*.test.mjs
 

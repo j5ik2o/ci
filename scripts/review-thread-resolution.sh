@@ -111,6 +111,86 @@ fetch_pr_metadata() {
     '
 }
 
+fetch_pr_head_oid() {
+  local pr_number="$1"
+
+  gh api \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "repos/$OWNER/$REPO/pulls/$pr_number" \
+    --jq '.head.sha // ""'
+}
+
+fetch_pending_check_names() {
+  local head_ref_oid="$1"
+  local check_runs_response
+  local status_response
+
+  check_runs_response="$(
+    gh api \
+      --paginate \
+      --slurp \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "repos/$OWNER/$REPO/commits/$head_ref_oid/check-runs?per_page=100&filter=latest"
+  )" || return 1
+
+  status_response="$(
+    gh api \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "repos/$OWNER/$REPO/commits/$head_ref_oid/status"
+  )" || return 1
+
+  jq -n -r \
+    --arg required_context "$REQUIRED_CONTEXT" \
+    --arg current_run_id "${GITHUB_RUN_ID:-}" \
+    --argjson check_run_pages "$check_runs_response" \
+    --argjson status_response "$status_response" '
+      def excluded_check_name:
+        (.name // "") as $name
+        | ($name | split(" / ")[-1]) as $job_name
+        | $name == $required_context
+          or $job_name == $required_context
+          or $name == "Refresh review-thread state"
+          or $job_name == "Refresh review-thread state"
+          or $name == "Evaluate CI review-thread gate"
+          or $job_name == "Evaluate CI review-thread gate"
+          or $name == "Review Thread Resolution"
+          or $job_name == "Review Thread Resolution"
+          or $name == "Review Thread Refresh"
+          or $job_name == "Review Thread Refresh"
+          or $name == "CI Review Thread Gate"
+          or $job_name == "CI Review Thread Gate";
+      def current_workflow_run:
+        ($current_run_id | length) > 0
+        and ((.details_url // "") | contains("/actions/runs/" + $current_run_id + "/"));
+
+      (
+        [
+          $check_run_pages[]?.check_runs[]?
+          | select((excluded_check_name | not) and (current_workflow_run | not))
+          | select((.status // "") != "completed")
+          | "check: \(.name // "unknown") [\(.status // "unknown")]"
+        ]
+        +
+        [
+          ($status_response.statuses // [])
+          | group_by(.context // "")
+          | .[]
+          | max_by(.updated_at // .created_at // "")
+          | select((.context // "") != $required_context)
+          | select((.state // "") == "pending" or (.state // "") == "expected")
+          | "status: \(.context // "unknown") [\(.state // "unknown")]"
+        ]
+      )[]
+    '
+}
+
+error_is_resource_inaccessible() {
+  grep -qi 'Resource not accessible by integration' "$1"
+}
+
 wait_for_checks() {
   local pr_number="$1"
   local head_ref_oid="$2"
@@ -118,9 +198,9 @@ wait_for_checks() {
   local sleep_seconds=5
   local max_sleep_seconds=30
   local attempt=0
-  local status_response
   local current_head_ref_oid
   local pending_checks
+  local error_file
 
   if ! bool_is_true "$WAIT_FOR_OTHER_CHECKS"; then
     echo "Skipping other-check wait because wait_for_other_checks=false."
@@ -135,12 +215,24 @@ wait_for_checks() {
 
   while [[ "$attempt" -lt "$max_attempts" ]]; do
     attempt=$((attempt + 1))
-    status_response="$(gh pr view "$pr_number" --repo "$OWNER/$REPO" --json headRefOid,statusCheckRollup)" || {
+    error_file="$(mktemp)"
+
+    if ! current_head_ref_oid="$(fetch_pr_head_oid "$pr_number" 2> "$error_file")"; then
+      if error_is_resource_inaccessible "$error_file"; then
+        echo "::notice::Unable to inspect PR head because GitHub token cannot access a resource; evaluating review-thread state without waiting for other checks."
+        cat "$error_file" >&2
+        rm -f "$error_file"
+        return 0
+      fi
       if [[ "$attempt" -eq "$max_attempts" ]]; then
-        echo "::error::Failed to fetch PR status after $max_attempts attempts."
+        echo "::error::Failed to fetch PR head after $max_attempts attempts."
+        cat "$error_file" >&2
+        rm -f "$error_file"
         return 1
       fi
-      echo "::warning::Failed to fetch PR status on attempt $attempt; retrying."
+      echo "::warning::Failed to fetch PR head on attempt $attempt; retrying."
+      cat "$error_file" >&2
+      rm -f "$error_file"
       sleep "$sleep_seconds"
       if [[ "$sleep_seconds" -lt "$max_sleep_seconds" ]]; then
         sleep_seconds=$((sleep_seconds * 2))
@@ -149,9 +241,9 @@ wait_for_checks() {
         fi
       fi
       continue
-    }
+    fi
+    rm -f "$error_file"
 
-    current_head_ref_oid="$(jq -r '.headRefOid' <<< "$status_response")"
     if [[ "$current_head_ref_oid" != "$head_ref_oid" ]]; then
       if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "schedule" ]]; then
         echo "::notice::PR head changed from $head_ref_oid to $current_head_ref_oid while waiting for checks; continuing on the latest head."
@@ -162,30 +254,33 @@ wait_for_checks() {
       fi
     fi
 
-    pending_checks="$(
-      jq -r --arg required_context "$REQUIRED_CONTEXT" '
-        .statusCheckRollup[]
-        | select(
-            if .__typename == "CheckRun" then
-              (.name != $required_context
-                and .workflowName != "Review Thread Resolution"
-                and .workflowName != "Review Thread Refresh"
-                and .workflowName != "CI Review Thread Gate"
-                and (.status != "COMPLETED"))
-            elif .__typename == "StatusContext" then
-              (.context != $required_context
-                and (.state == "PENDING" or .state == "EXPECTED"))
-            else
-              false
-            end
-          )
-        | if .__typename == "CheckRun" then
-            "\(.workflowName // "unknown") / \(.name // "unknown")"
-          else
-            "\(.context // "unknown")"
-          end
-      ' <<< "$status_response"
-    )"
+    error_file="$(mktemp)"
+    if ! pending_checks="$(fetch_pending_check_names "$current_head_ref_oid" 2> "$error_file")"; then
+      if error_is_resource_inaccessible "$error_file"; then
+        echo "::notice::Unable to inspect other PR checks because GitHub token cannot access a check resource; evaluating review-thread state without waiting."
+        cat "$error_file" >&2
+        rm -f "$error_file"
+        return 0
+      fi
+      if [[ "$attempt" -eq "$max_attempts" ]]; then
+        echo "::error::Failed to fetch PR checks after $max_attempts attempts."
+        cat "$error_file" >&2
+        rm -f "$error_file"
+        return 1
+      fi
+      echo "::warning::Failed to fetch PR checks on attempt $attempt; retrying."
+      cat "$error_file" >&2
+      rm -f "$error_file"
+      sleep "$sleep_seconds"
+      if [[ "$sleep_seconds" -lt "$max_sleep_seconds" ]]; then
+        sleep_seconds=$((sleep_seconds * 2))
+        if [[ "$sleep_seconds" -gt "$max_sleep_seconds" ]]; then
+          sleep_seconds="$max_sleep_seconds"
+        fi
+      fi
+      continue
+    fi
+    rm -f "$error_file"
 
     if [[ -z "$pending_checks" ]]; then
       echo "All other PR checks have reached a terminal state."
@@ -649,7 +744,7 @@ check_pr() {
 
   wait_for_checks "$pr_number" "$head_ref_oid" || return 1
 
-  latest_head_ref_oid="$(gh pr view "$pr_number" --repo "$OWNER/$REPO" --json headRefOid --jq '.headRefOid')" || return 1
+  latest_head_ref_oid="$(fetch_pr_head_oid "$pr_number")" || return 1
   if [[ -z "$latest_head_ref_oid" || "$latest_head_ref_oid" == "null" ]]; then
     echo "::error::Failed to refresh PR #$pr_number head SHA before publishing status."
     return 1

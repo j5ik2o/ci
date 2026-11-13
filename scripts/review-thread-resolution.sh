@@ -353,6 +353,11 @@ wait_for_checks() {
       echo "All other PR checks have reached a terminal state."
       return 0
     fi
+    if [[ -n "$(check_labels_in_state "$other_checks" failure)" ]]; then
+      echo "Another PR check already failed; evaluating without waiting for the rest:"
+      echo "$pending_checks"
+      return 0
+    fi
 
     if [[ "$attempt" -eq "$max_attempts" ]]; then
       echo "::notice::Other PR checks are still pending after $max_attempts attempts; the gate will report pending until a later run sees them finish."

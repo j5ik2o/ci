@@ -55,7 +55,7 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/check-runs"* ]]; then
     pending) unit_test='"status":"in_progress","conclusion":null' ;;
     *) unit_test="\"status\":\"completed\",\"conclusion\":\"${GH_OTHER_CHECK:-success}\"" ;;
   esac
-  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},{"name":"ci / Build","status":"completed","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/461"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
+  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},{"name":"Slow Test","status":"'"${GH_SLOW_TEST_STATUS:-completed}"'","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/127/job/462"},{"name":"ci / Build","status":"completed","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/461"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
   exit 0
 fi
 
@@ -169,6 +169,14 @@ for conclusion in failure cancelled timed_out action_required; do
   GH_OTHER_CHECK="$conclusion" run_script "pull_request" "true"
   expect_state failure "an other check concluding $conclusion must publish failure."
 done
+
+reset_logs
+GH_OTHER_CHECK=failure GH_SLOW_TEST_STATUS=in_progress run_script "pull_request" "true"
+expect_state failure "a failed other check must publish failure while another is still running."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "a failed other check must end the wait early." >&2
+  exit 1
+fi
 
 reset_logs
 GH_OTHER_CHECK=neutral run_script "pull_request" "true"

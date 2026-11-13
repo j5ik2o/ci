@@ -66,6 +66,8 @@ jobs:
       wait_for_other_checks: ${{ (github.event_name != 'workflow_dispatch' || inputs.wait_for_other_checks) && 'true' || 'false' }}
       base_branch: main
       required_context: Check unresolved comments
+      expected_check_names: |
+        Unit Test
       ci_ref: v1
 ```
 
@@ -132,9 +134,11 @@ re-evaluates the gate when other work completes:
 Statuses that this workflow publishes with `GITHUB_TOKEN` do not start new
 workflow runs, so the gate does not re-trigger itself.
 
-For branch protection, prefer requiring only the synthetic status context
-`Check unresolved comments`, because it already requires the other checks to
-pass. Event-driven refresh runs publish that context but do not fail the
+For branch protection, you can require only the synthetic status context
+`Check unresolved comments`, because it requires the other checks to pass. Do
+this only when `expected_check_names` lists every check that must pass;
+otherwise a gate run that starts before CI reports can publish `success`.
+Keep requiring the CI checks themselves when you cannot list them. Event-driven refresh runs publish that context but do not fail the
 workflow job for unresolved review state or for other checks, and concurrent refresh
 runs use per-run concurrency groups so GitHub Actions does not cancel older
 pending refresh jobs. This keeps the synthetic status as the only branch

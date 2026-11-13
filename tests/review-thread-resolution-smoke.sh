@@ -60,6 +60,10 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/check-runs"* ]]; then
 fi
 
 if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/pulls"* ]]; then
+  case "${GH_STATUS_PULLS:-open}" in
+    none) printf '%s\n' '[{"number":26,"state":"closed","head":{"sha":"head-sha"}}]'; exit 0 ;;
+    fail) echo "HTTP 502" >&2; exit 1 ;;
+  esac
   printf '%s\n' '[{"number":26,"state":"closed","head":{"sha":"head-sha"}},{"number":27,"state":"open","head":{"sha":"head-sha"}}]'
   exit 0
 fi
@@ -244,6 +248,20 @@ printf '%s\n' '{"sha":"head-sha","context":"Unit Test"}' > "$tmpdir/status-event
 reset_logs
 SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
 expect_state success "a status event must re-evaluate the open pull request for its commit."
+
+for pulls in none fail; do
+  reset_logs
+  GH_STATUS_PULLS="$pulls" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+  if [[ -s "$tmpdir/status-payloads.log" ]]; then
+    echo "a status event without an open pull request ($pulls) must be skipped." >&2
+    exit 1
+  fi
+done
+
+printf '%s\n' '{"pull_request":{"number":27},"inputs":{"pr_number":"99"},"repository":{"default_branch":"main"}}' > "$tmpdir/pr-with-inputs-event.json"
+reset_logs
+SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/pr-with-inputs-event.json" run_script "pull_request" "false"
+expect_state pending "CI gate mode must hold with an automatic base branch, and only workflow_dispatch may read inputs.pr_number."
 
 printf '%s\n' '{"sha":"head-sha","context":"Check unresolved comments"}' > "$tmpdir/own-status-event.json"
 reset_logs

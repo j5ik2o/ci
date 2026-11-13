@@ -100,10 +100,10 @@ resolve_pr_number() {
     return 0
   fi
 
-  jq -r '
+  jq -r --arg event_name "$EVENT_NAME" '
     def url_number($url):
       ($url // "" | split("/")[-1]);
-    if ((.inputs.pr_number? // "") | tostring | length) > 0 then
+    if $event_name == "workflow_dispatch" and ((.inputs.pr_number? // "") | tostring | length) > 0 then
       (.inputs.pr_number | tostring)
     elif (.pull_request.number? // null) != null then
       (.pull_request.number | tostring)
@@ -137,8 +137,9 @@ resolve_pr_number_for_status_event() {
   gh api \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/$OWNER/$REPO/commits/$sha/pulls" \
-    | jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""'
+    "repos/$OWNER/$REPO/commits/$sha/pulls?per_page=100" \
+    | jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""' \
+    || echo "::warning::Failed to look up the pull request for status event commit $sha." >&2
 }
 
 event_is_non_pr_issue_comment() {

@@ -82,8 +82,12 @@ Each trigger has one job:
   re-evaluate when review state changes.
 - `workflow_run` re-evaluates when any other workflow completes, because a long
   CI run can finish after the gate's wait ends. The `!Review Thread Resolution`
-  pattern keeps the gate from re-triggering on its own runs, and the shared job
-  also skips a `workflow_run` event from its own caller file.
+  pattern keeps the gate from re-triggering on its own runs. The shared job also
+  has an `if:` that skips a `workflow_run` event from its own caller file, as a
+  backup for a renamed caller. No run has exercised that `if:` yet, because the
+  name pattern filters those events first. Each completed workflow and each
+  posted status starts a gate run that may wait, so a busy repository runs more
+  gate jobs at once.
 - `check_suite` re-evaluates when a GitHub App other than GitHub Actions (Cursor
   Bugbot, CodeRabbit, GitGuardian, and similar) completes its checks. GitHub
   does not send `check_suite` for suites that GitHub Actions created.

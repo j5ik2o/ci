@@ -16,7 +16,7 @@ on:
     types: [completed]
   status:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       pr_number:

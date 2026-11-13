@@ -128,9 +128,11 @@ state is `success`; `pending` and `expected` count as running, and `failure` and
 the review-thread workflows by job name, and the jobs of its own workflow run.
 
 A run waits for the other checks before it evaluates (up to 60 polls, or 3 for
-`workflow_dispatch`), and stops waiting as soon as one of them fails. If checks
-are still running when the wait ends, the run publishes `pending` instead of
-guessing, and a later run settles the status. Scheduled and manual refresh-all
+`workflow_dispatch`), and stops waiting as soon as one of them fails. The status
+then follows the table above. A failed check publishes `failure` even while
+others are still running. If checks are still running when the wait ends and
+none has failed, the run publishes `pending` instead of guessing, and a later
+run settles the status. Scheduled and manual refresh-all
 runs do not wait, but they still publish `pending` or `failure` from the other
 checks.
 

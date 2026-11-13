@@ -40,8 +40,6 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
-  pull_request_review_thread:
-    types: [resolved, unresolved]
   issue_comment:
     types: [created, edited, deleted]
   workflow_run:
@@ -82,9 +80,6 @@ Each trigger has one job:
   review or comment event.
 - `pull_request_review`, `pull_request_review_comment`, and `issue_comment`
   re-evaluate when review state changes.
-- `pull_request_review_thread` re-evaluates when a thread is resolved or
-  unresolved. Resolving a thread does not send any of the review or comment
-  events above.
 - `workflow_run` re-evaluates when any other workflow completes, because a long
   CI run can finish after the gate's wait ends. The `!Review Thread Resolution`
   pattern keeps the gate from re-triggering on its own runs, and the shared job
@@ -95,7 +90,12 @@ Each trigger has one job:
 - `status` re-evaluates when another service posts a commit status. Statuses
   that this workflow publishes with `GITHUB_TOKEN` do not start workflow runs,
   so the gate does not re-trigger itself.
-- `schedule` refreshes every open PR as a fallback.
+- `schedule` refreshes every open PR. It is also the only trigger that sees a
+  resolved or unresolved review thread: GitHub Actions has no event for thread
+  resolution, and a workflow that lists `pull_request_review_thread` under `on:`
+  is rejected as an invalid workflow file. After a thread is resolved, the
+  status changes at the next scheduled run, or at the next review, comment, or
+  push event.
 - `workflow_dispatch` refreshes one PR, or every open PR when `pr_number` is
   empty. Only this event honors the `wait_for_other_checks` input; every other
   event waits for the other checks.

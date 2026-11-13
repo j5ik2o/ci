@@ -101,10 +101,17 @@ Each trigger has one job:
   stays `pending` after CI finishes, until a review, comment, or push.
 - `check_suite` re-evaluates when a GitHub App other than GitHub Actions (Cursor
   Bugbot, CodeRabbit, GitGuardian, and similar) completes its checks. GitHub
-  does not send `check_suite` for suites that GitHub Actions created.
+  does not start workflows from `check_suite` for suites that GitHub Actions
+  created, or for suites whose head SHA is associated with GitHub Actions
+  ([docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#check_suite)).
+  When that suppression applies to an app's suite, its result does not
+  re-evaluate the gate, and the status stays `pending` until the next event or
+  the daily schedule.
 - `status` re-evaluates when another service posts a commit status. Statuses
   that this workflow publishes with `GITHUB_TOKEN` do not start workflow runs,
-  so the gate does not re-trigger itself.
+  so the gate does not re-trigger itself. If the run cannot look up the PR for the
+  status's commit after three tries, it fails instead of skipping, so the
+  missed re-evaluation is visible.
 - `schedule` refreshes every open PR once a day, at 18:17 UTC. It is also the
   only trigger that sees a resolved or unresolved review thread. GitHub Actions
   has no event for thread resolution, and it rejects a workflow that lists

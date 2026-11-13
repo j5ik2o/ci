@@ -128,12 +128,26 @@ resolve_pr_number_for_status_event() {
   fi
   sha="$(event_field '.sha?')"
   [[ -n "$sha" ]] || return 0
-  gh api \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/$OWNER/$REPO/commits/$sha/pulls?per_page=100" \
-    | jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""' \
-    || echo "::warning::Failed to look up the pull request for status event commit $sha." >&2
+  local attempt
+  local pulls
+
+  for attempt in 1 2 3; do
+    if pulls="$(
+      gh api \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "repos/$OWNER/$REPO/commits/$sha/pulls?per_page=100"
+    )"; then
+      jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""' <<< "$pulls"
+      return 0
+    fi
+    echo "::warning::Failed to look up the pull request for status event commit $sha (attempt $attempt)." >&2
+    if [[ "$attempt" -lt 3 ]]; then
+      sleep $((attempt * 5))
+    fi
+  done
+  echo "::error::Could not look up the pull request for status event commit $sha; the gate was not re-evaluated." >&2
+  return 1
 }
 
 event_is_non_pr_issue_comment() {
@@ -990,7 +1004,7 @@ run_single_pr() {
 main() {
   PR_NUMBER="$(resolve_pr_number)"
   if [[ -z "$PR_NUMBER" ]]; then
-    PR_NUMBER="$(resolve_pr_number_for_status_event)"
+    PR_NUMBER="$(resolve_pr_number_for_status_event)" || return 1
   fi
 
   if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then

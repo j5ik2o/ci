@@ -273,14 +273,26 @@ reset_logs
 SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
 expect_state success "a status event must re-evaluate the open pull request for its commit."
 
-for pulls in none fail; do
-  reset_logs
-  GH_STATUS_PULLS="$pulls" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
-  if [[ -s "$tmpdir/status-payloads.log" ]]; then
-    echo "a status event without an open pull request ($pulls) must be skipped." >&2
-    exit 1
-  fi
-done
+reset_logs
+GH_STATUS_PULLS=none SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+if [[ -s "$tmpdir/status-payloads.log" ]]; then
+  echo "a status event without an open pull request must be skipped." >&2
+  exit 1
+fi
+
+reset_logs
+set +e
+GH_STATUS_PULLS=fail SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+lookup_failure_status=$?
+set -e
+if [[ "$lookup_failure_status" -eq 0 ]]; then
+  echo "a status event whose pull request lookup keeps failing must fail the run, not pass as no pull request." >&2
+  exit 1
+fi
+if [[ "$(wc -l < "$tmpdir/sleeps.log")" -lt 2 ]]; then
+  echo "a failing pull request lookup must be retried before the run fails." >&2
+  exit 1
+fi
 
 printf '%s\n' '{"pull_request":{"number":27},"inputs":{"pr_number":"99"},"repository":{"default_branch":"main"}}' > "$tmpdir/pr-with-inputs-event.json"
 reset_logs

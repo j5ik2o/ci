@@ -39,12 +39,6 @@ case "$WAIT_FOR_OTHER_CHECKS" in
   false|False|FALSE) WAIT_FOR_OTHER_CHECKS=0 ;;
   *) WAIT_FOR_OTHER_CHECKS=1 ;;
 esac
-# A CI gate caller runs inside its own CI workflow run, whose sibling jobs are
-# excluded to avoid waiting on itself, so it cannot vouch for a success.
-CI_GATE_MODE=0
-if [[ "$WAIT_FOR_OTHER_CHECKS" -eq 0 && "$EVENT_NAME" != "workflow_dispatch" && "$EVENT_NAME" != "schedule" ]]; then
-  CI_GATE_MODE=1
-fi
 case "$PUBLISH_STATUS" in
   false|False|FALSE) PUBLISH_STATUS=0 ;;
   *) PUBLISH_STATUS=1 ;;
@@ -246,11 +240,17 @@ fetch_other_check_states() {
       | [$status_pages[]?.statuses[]?] as $statuses
       | [
           $check_runs[]
-          | select((excluded_check_name | not) and (current_workflow_run | not))
-          | {
-              state: check_run_state,
-              label: "check: \(.name // "unknown") [\(.conclusion // .status // "unknown")]"
-            }
+          | select(excluded_check_name | not)
+          | if current_workflow_run then
+              # Sibling jobs of a CI gate run: waiting on them would deadlock an
+              # aggregate job that needs this one, so they only block success.
+              {state: "own_run", label: "check: \(.name // "unknown") [same workflow run]"}
+            else
+              {
+                state: check_run_state,
+                label: "check: \(.name // "unknown") [\(.conclusion // .status // "unknown")]"
+              }
+            end
         ]
         +
         [
@@ -805,6 +805,7 @@ check_pr() {
   local other_checks
   local failing_count
   local pending_count
+  local own_run_count
   local gate_state
   local gate_description
   local error_file
@@ -884,6 +885,7 @@ check_pr() {
   rm -f "$error_file"
   failing_count="$(jq '[.[] | select(.state == "failure")] | length' <<< "$other_checks")"
   pending_count="$(jq '[.[] | select(.state == "pending")] | length' <<< "$other_checks")"
+  own_run_count="$(jq '[.[] | select(.state == "own_run")] | length' <<< "$other_checks")"
 
   if [[ "$unresolved_count" -gt 0 || "$unacknowledged_count" -gt 0 ]]; then
     gate_state=failure
@@ -894,9 +896,9 @@ check_pr() {
   elif [[ "$pending_count" -gt 0 ]]; then
     gate_state=pending
     gate_description="No unresolved review state; waiting for $pending_count other check(s)."
-  elif [[ "$CI_GATE_MODE" -eq 1 ]]; then
+  elif [[ "$own_run_count" -gt 0 ]]; then
     gate_state=pending
-    gate_description="No unresolved review state; a refresh run that sees the whole CI run reports success."
+    gate_description="No unresolved review state; $own_run_count job(s) of this workflow run are settled by a later run."
   else
     gate_state=success
     gate_description="No unresolved review state; all other checks passed."

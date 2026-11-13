@@ -55,7 +55,11 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/check-runs"* ]]; then
     pending) unit_test='"status":"in_progress","conclusion":null' ;;
     *) unit_test="\"status\":\"completed\",\"conclusion\":\"${GH_OTHER_CHECK:-success}\"" ;;
   esac
-  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},{"name":"Slow Test","status":"'"${GH_SLOW_TEST_STATUS:-completed}"'","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/127/job/462"},{"name":"ci / Build","status":"completed","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/461"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
+  current_run_sibling=""
+  if [[ "${GH_CURRENT_RUN_SIBLING:-0}" == "1" ]]; then
+    current_run_sibling='{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},'
+  fi
+  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},'"$current_run_sibling"'{"name":"Slow Test","status":"'"${GH_SLOW_TEST_STATUS:-completed}"'","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/127/job/462"},{"name":"ci / Build","status":"completed","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/461"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
   exit 0
 fi
 
@@ -211,8 +215,28 @@ GH_OTHER_CHECK=failure run_script "workflow_dispatch" "true" "1"
 expect_state failure "review state and a failing other check must publish failure."
 
 reset_logs
+GH_CURRENT_RUN_SIBLING=1 run_script "pull_request" "false"
+expect_state pending "a run with sibling jobs in its own workflow run (CI gate mode) must not publish success."
+
+reset_logs
+GH_CURRENT_RUN_SIBLING=1 run_script "pull_request" "true"
+expect_state pending "sibling jobs of the current run must block success even when the run waits."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "sibling jobs of the current run must not be waited for." >&2
+  exit 1
+fi
+
+reset_logs
 run_script "pull_request" "false"
-expect_state pending "CI gate mode cannot see its own run and must not publish success."
+expect_state success "an event run that does not wait and has no sibling jobs must publish success when the other checks passed."
+
+reset_logs
+GH_OTHER_CHECK=pending run_script "pull_request" "false"
+expect_state pending "an event run that does not wait must publish pending while other checks run."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "an event run that does not wait must not poll." >&2
+  exit 1
+fi
 
 reset_logs
 GH_OTHER_CHECK=pending run_script "pull_request" ""
@@ -261,7 +285,7 @@ done
 printf '%s\n' '{"pull_request":{"number":27},"inputs":{"pr_number":"99"},"repository":{"default_branch":"main"}}' > "$tmpdir/pr-with-inputs-event.json"
 reset_logs
 SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/pr-with-inputs-event.json" run_script "pull_request" "false"
-expect_state pending "CI gate mode must hold with an automatic base branch, and only workflow_dispatch may read inputs.pr_number."
+expect_state success "an automatic base branch must work without waiting, and only workflow_dispatch may read inputs.pr_number."
 
 printf '%s\n' '{"sha":"head-sha","context":"Check unresolved comments"}' > "$tmpdir/own-status-event.json"
 reset_logs

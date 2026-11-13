@@ -26,9 +26,9 @@ publishes a synthetic commit status named `Check unresolved comments`.
 Every caller repository uses this file as is, at
 `.github/workflows/review-thread-resolution.yml`. It has no per-repository
 values, so copy it without editing. GitHub Actions reads triggers only from the
-caller file, so the template carries the trigger list. The shared workflow reads
-everything else from the event payload: the PR number, whether to wait for the
-other checks, and the base branch (the repository default branch).
+caller file, so the template carries the trigger list and one input. The
+shared workflow reads everything else from the event payload: the PR number and
+the base branch (the repository default branch).
 
 ```yaml
 name: Review Thread Resolution
@@ -71,7 +71,14 @@ jobs:
       statuses: write
       issues: read
       pull-requests: read
+    with:
+      wait_for_other_checks: ${{ github.event_name == 'workflow_dispatch' && inputs.wait_for_other_checks || 'false' }}
 ```
+
+Runs started by events do not wait for the other checks. A waiting run holds a
+runner for up to the whole wait, and the re-evaluation triggers below already
+settle the status once the other checks finish. A manual `workflow_dispatch`
+passes its own `wait_for_other_checks` input, which defaults to waiting.
 
 Each trigger has one job:
 
@@ -80,14 +87,14 @@ Each trigger has one job:
   review or comment event.
 - `pull_request_review`, `pull_request_review_comment`, and `issue_comment`
   re-evaluate when review state changes.
-- `workflow_run` re-evaluates when any other workflow completes, because a long
-  CI run can finish after the gate's wait ends. The `!Review Thread Resolution`
+- `workflow_run` re-evaluates when any other workflow completes. A run started
+  by `pull_request` usually finds CI still running and publishes `pending`;
+  this trigger settles it. The `!Review Thread Resolution`
   pattern keeps the gate from re-triggering on its own runs. The shared job also
   has an `if:` that skips a `workflow_run` event from its own caller file, as a
   backup for a renamed caller. No run has exercised that `if:` yet, because the
   name pattern filters those events first. Each completed workflow and each
-  posted status starts a gate run that may wait, so a busy repository runs more
-  gate jobs at once.
+  posted status starts a short gate run.
 - `check_suite` re-evaluates when a GitHub App other than GitHub Actions (Cursor
   Bugbot, CodeRabbit, GitGuardian, and similar) completes its checks. GitHub
   does not send `check_suite` for suites that GitHub Actions created.
@@ -104,8 +111,8 @@ Each trigger has one job:
   Without any of these, it comes from the daily schedule, up to about a day
   later.
 - `workflow_dispatch` refreshes one PR, or every open PR when `pr_number` is
-  empty. Only this event honors the `wait_for_other_checks` input; every other
-  event waits for the other checks.
+  empty. It is the only event that can wait for the other checks, through its
+  `wait_for_other_checks` input.
 
 `workflow_run`, `check_suite`, and `status` run from the template on the
 default branch. `workflow_run` and `check_suite` re-evaluate the first PR in
@@ -131,14 +138,17 @@ state is `success`; `pending` and `expected` count as running, and `failure` and
 `error` do not pass. The gate ignores its own status context, the check runs of
 the review-thread workflows by job name, and the jobs of its own workflow run.
 
-A run waits for the other checks before it evaluates (up to 60 polls, or 3 for
-`workflow_dispatch`), and stops waiting as soon as one of them fails. The status
-then follows the table above. A failed check publishes `failure` even while
-others are still running. If checks are still running when the wait ends and
+A run that does not wait reads the other checks once. A failed check publishes
+`failure` even while others are still running. If checks are still running and
 none has failed, the run publishes `pending` instead of guessing, and a later
-run settles the status. Scheduled and manual refresh-all
-runs do not wait, but they still publish `pending` or `failure` from the other
-checks.
+run settles the status. A run that waits (a manual `workflow_dispatch` for one
+PR, or a caller that passes `wait_for_other_checks: "true"`) polls up to 60
+times, or 3 for `workflow_dispatch`, stops as soon as one check fails, and then
+follows the same table. Scheduled and manual refresh-all runs never wait.
+
+The jobs of the gate's own workflow run never count as passing. When the run has
+other jobs, as in CI gate mode below, the gate does not wait on them and
+publishes `pending` instead of `success`.
 
 The gate only sees checks that have already reported on the PR head. GitHub
 Actions creates the check runs of every workflow that an event starts while
@@ -150,10 +160,13 @@ it reports; its report then re-evaluates the gate through `check_suite` or
 ### Branch protection
 
 Require the synthetic status context `Check unresolved comments`. Because it
-requires the other checks to pass, it can be the only required check. Refresh
-runs publish that context but do not fail the workflow job for unresolved review
-state or for other checks. Concurrent refresh runs use per-run concurrency
-groups so GitHub Actions does not cancel older pending refresh jobs.
+requires the other checks to pass, it can be the only required check. Do not
+require the gate's own job. A run that does not wait fails its job for
+unresolved review state. Runs started by `pull_request`, review, and comment
+events for the same PR share one concurrency group, so GitHub Actions cancels a
+pending run when a newer one queues. The latest run
+publishes the status. The gate ignores its own jobs, including cancelled and
+failed ones, by job name.
 
 ### CI gate mode
 
@@ -161,9 +174,9 @@ A repository that requires an aggregate CI job instead of this status can call
 the shared workflow from its CI workflow with `wait_for_other_checks: "false"`.
 In that mode, unresolved review state fails the reusable workflow job so the
 aggregate job can depend on it. The job result ignores the other checks, so the
-aggregate job does not wait on itself. A CI gate run cannot see the other jobs
-of its own run, so it publishes `pending` instead of `success`, and the
-template's runs settle `success` after CI completes.
+aggregate job does not wait on itself. The other jobs of its own run only block
+`success`, so it publishes `pending` instead, and the template's runs settle
+`success` after CI completes.
 
 Do not require both. When the aggregate job depends on a CI gate job that failed
 for review state, the aggregate job stays failed after the threads are

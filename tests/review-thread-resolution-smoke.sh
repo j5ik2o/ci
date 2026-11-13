@@ -67,6 +67,15 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/pulls"* ]]; then
   case "${GH_STATUS_PULLS:-open}" in
     none) printf '%s\n' '[{"number":26,"state":"closed","head":{"sha":"head-sha"}}]'; exit 0 ;;
     fail) echo "HTTP 502" >&2; exit 1 ;;
+    garbled) echo "<html>bad gateway</html>"; exit 0 ;;
+    flaky)
+      count="$(cat "$GH_FLAKY_COUNT" 2>/dev/null || echo 0)"
+      echo "$((count + 1))" > "$GH_FLAKY_COUNT"
+      if [[ "$count" -lt 2 ]]; then
+        echo "HTTP 502" >&2
+        exit 1
+      fi
+      ;;
   esac
   printf '%s\n' '[{"number":26,"state":"closed","head":{"sha":"head-sha"}},{"number":27,"state":"open","head":{"sha":"head-sha"}}]'
   exit 0
@@ -280,19 +289,26 @@ if [[ -s "$tmpdir/status-payloads.log" ]]; then
   exit 1
 fi
 
+for pulls in fail garbled; do
+  reset_logs
+  set +e
+  GH_STATUS_PULLS="$pulls" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+  lookup_failure_status=$?
+  set -e
+  if [[ "$lookup_failure_status" -eq 0 ]]; then
+    echo "a status event whose pull request lookup keeps failing ($pulls) must fail the run, not pass as no pull request." >&2
+    exit 1
+  fi
+  if [[ "$(wc -l < "$tmpdir/sleeps.log")" -ne 2 ]]; then
+    echo "a failing pull request lookup ($pulls) must be tried three times before the run fails." >&2
+    exit 1
+  fi
+done
+
 reset_logs
-set +e
-GH_STATUS_PULLS=fail SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
-lookup_failure_status=$?
-set -e
-if [[ "$lookup_failure_status" -eq 0 ]]; then
-  echo "a status event whose pull request lookup keeps failing must fail the run, not pass as no pull request." >&2
-  exit 1
-fi
-if [[ "$(wc -l < "$tmpdir/sleeps.log")" -lt 2 ]]; then
-  echo "a failing pull request lookup must be retried before the run fails." >&2
-  exit 1
-fi
+rm -f "$tmpdir/flaky-count"
+GH_FLAKY_COUNT="$tmpdir/flaky-count" GH_STATUS_PULLS=flaky SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+expect_state success "a pull request lookup that succeeds on the third try must re-evaluate the gate."
 
 printf '%s\n' '{"pull_request":{"number":27},"inputs":{"pr_number":"99"},"repository":{"default_branch":"main"}}' > "$tmpdir/pr-with-inputs-event.json"
 reset_logs

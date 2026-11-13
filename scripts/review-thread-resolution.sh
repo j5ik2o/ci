@@ -130,6 +130,7 @@ resolve_pr_number_for_status_event() {
   [[ -n "$sha" ]] || return 0
   local attempt
   local pulls
+  local number
 
   for attempt in 1 2 3; do
     if pulls="$(
@@ -137,8 +138,10 @@ resolve_pr_number_for_status_event() {
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "repos/$OWNER/$REPO/commits/$sha/pulls?per_page=100"
-    )"; then
+    )" && number="$(
       jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""' <<< "$pulls"
+    )"; then
+      printf '%s\n' "$number"
       return 0
     fi
     echo "::warning::Failed to look up the pull request for status event commit $sha (attempt $attempt)." >&2

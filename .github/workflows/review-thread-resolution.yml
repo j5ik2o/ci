@@ -70,7 +70,7 @@ on:
         description: Ref of j5ik2o/ci to check out for shared scripts. Pin this to the same tag as the reusable workflow.
         required: false
         type: string
-        default: v1
+        default: test/gate-other-checks-e2e
 
 permissions:
   contents: read

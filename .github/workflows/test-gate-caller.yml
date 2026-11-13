@@ -1,0 +1,20 @@
+name: Test Gate Caller
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  refresh:
+    uses: ./.github/workflows/review-thread-resolution.yml
+    permissions:
+      contents: read
+      checks: write
+      statuses: write
+      issues: read
+      pull-requests: read
+    with:
+      wait_for_other_checks: "true"
+      base_branch: feat/review-thread-gate-other-checks
+      required_context: Check unresolved comments
+      ci_ref: test/gate-other-checks-e2e

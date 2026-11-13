@@ -17,8 +17,9 @@ When a reusable workflow checks out shared scripts from this repository, set
 ## Review Thread Resolution
 
 Keep the trigger wrapper in each caller repository. The shared workflow evaluates
-unresolved review threads, top-level PR comments, and review summaries. It
-publishes a synthetic commit status named `Check unresolved comments` by default.
+unresolved review threads, top-level PR comments, review summaries, and the
+conclusions of the other checks on the PR head. It publishes a synthetic commit
+status named `Check unresolved comments` by default.
 
 ```yaml
 name: Review Thread Resolution
@@ -32,6 +33,11 @@ on:
     types: [created, edited, deleted]
   issue_comment:
     types: [created, edited, deleted]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  check_suite:
+    types: [completed]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
@@ -70,16 +76,57 @@ context instead of relying on later review or comment events. The
 `workflow_dispatch` runs, because `inputs.*` is empty for every other event
 type; all other runs wait for the other PR checks.
 
-For branch protection, prefer requiring the synthetic status context
-`Check unresolved comments`. Event-driven refresh runs publish that context but
-do not fail the workflow job for unresolved review state, and concurrent refresh
+The status reflects both the review state and the other checks on the PR head:
+
+| Review state | Other checks | Status |
+| --- | --- | --- |
+| Unresolved threads or unacknowledged comments | any | `failure` |
+| Clean | at least one did not pass | `failure` |
+| Clean | none failed, at least one still running | `pending` |
+| Clean | all passed | `success` |
+
+A check run passes when it concludes `success`, `skipped`, or `neutral`. Any
+other conclusion (`failure`, `cancelled`, `timed_out`, `action_required`,
+`stale`, `startup_failure`) does not pass. A commit status passes only when its
+state is `success`; `pending` and `expected` count as running, and `failure` and
+`error` do not pass. The gate ignores its own status context, the check runs of
+the review-thread workflows by job name, and the jobs of its own workflow run.
+
+A run waits for the other checks before it evaluates (up to 60 polls, or 3 for
+`workflow_dispatch`). If checks are still running when the wait ends, the run
+publishes `pending` instead of guessing, and a later run settles the status.
+Scheduled and manual refresh-all runs do not wait, but they still publish
+`pending` or `failure` from the other checks.
+
+Because a long CI run can finish after the gate's wait ends, the example
+re-evaluates the gate when other work completes:
+
+- `workflow_run` fires when the listed workflows complete. Replace `[CI]` with
+  the names of the caller's own CI workflows, and do not list this workflow.
+  GitHub runs `workflow_run` from the workflow file on the default branch.
+- `check_suite` fires when a GitHub App other than GitHub Actions (Cursor
+  Bugbot, CodeRabbit, and similar) completes its checks. GitHub does not send
+  `check_suite` for suites that GitHub Actions created, which is why
+  `workflow_run` is also needed. Like `workflow_run`, it runs from the default
+  branch.
+- `schedule` refreshes every open PR as a fallback.
+
+Statuses that this workflow publishes with `GITHUB_TOKEN` do not start new
+workflow runs, so the gate does not re-trigger itself.
+
+For branch protection, prefer requiring only the synthetic status context
+`Check unresolved comments`, because it already requires the other checks to
+pass. Event-driven refresh runs publish that context but do not fail the
+workflow job for unresolved review state or for other checks, and concurrent refresh
 runs use per-run concurrency groups so GitHub Actions does not cancel older
 pending refresh jobs. This keeps the synthetic status as the only branch
 protection signal while avoiding cancelled refresh check-runs on the PR head.
 
 CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
 unresolved review state still fails the reusable workflow job so a caller's
-aggregate `CI Success` job can depend on it.
+aggregate `CI Success` job can depend on it. The job result ignores the other
+checks, so the aggregate job does not wait on itself, but the published status
+still includes them.
 
 Top-level bot report comments and review summaries can be excluded from the
 acknowledgement gate with newline-separated literal substrings. The default

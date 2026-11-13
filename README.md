@@ -12,14 +12,23 @@ uses: j5ik2o/ci/.github/workflows/review-thread-resolution.yml@v1
 ```
 
 When a reusable workflow checks out shared scripts from this repository, set
-`ci_ref` to the same tag.
+`ci_ref` to the same tag. The Review Thread Resolution template omits `ci_ref`
+because its default, `v1`, matches the tag the template uses.
 
 ## Review Thread Resolution
 
-Keep the trigger wrapper in each caller repository. The shared workflow evaluates
-unresolved review threads, top-level PR comments, review summaries, and the
-conclusions of the other checks on the PR head. It publishes a synthetic commit
-status named `Check unresolved comments` by default.
+The shared workflow evaluates unresolved review threads, top-level PR comments,
+review summaries, and the conclusions of the other checks on the PR head. It
+publishes a synthetic commit status named `Check unresolved comments`.
+
+### Caller template
+
+Every caller repository uses this file as is, at
+`.github/workflows/review-thread-resolution.yml`. It has no per-repository
+values, so copy it without editing. GitHub Actions reads triggers only from the
+caller file, so the template carries the trigger list. The shared workflow reads
+everything else from the event payload: the PR number, whether to wait for the
+other checks, and the base branch (the repository default branch).
 
 ```yaml
 name: Review Thread Resolution
@@ -31,19 +40,22 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  pull_request_review_thread:
+    types: [resolved, unresolved]
   issue_comment:
     types: [created, edited, deleted]
   workflow_run:
-    workflows: [CI]
+    workflows: ["**", "!Review Thread Resolution"]
     types: [completed]
   check_suite:
     types: [completed]
+  status:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to refresh. Leave empty to refresh all open main PRs.
+        description: PR number to refresh. Leave empty to refresh all open PRs.
         required: false
         type: string
       wait_for_other_checks:
@@ -61,20 +73,40 @@ jobs:
       statuses: write
       issues: read
       pull-requests: read
-    with:
-      pr_number: ${{ inputs.pr_number }}
-      wait_for_other_checks: ${{ (github.event_name != 'workflow_dispatch' || inputs.wait_for_other_checks) && 'true' || 'false' }}
-      base_branch: main
-      required_context: Check unresolved comments
-      ci_ref: v1
 ```
 
-The `pull_request` trigger covers `opened`, `synchronize`, `reopened`, and
-`ready_for_review` so that a new PR head also receives the synthetic status
-context instead of relying on later review or comment events. The
-`wait_for_other_checks` expression only honors the manual input on
-`workflow_dispatch` runs, because `inputs.*` is empty for every other event
-type; all other runs wait for the other PR checks.
+Each trigger has one job:
+
+- `pull_request` covers `opened`, `synchronize`, `reopened`, and
+  `ready_for_review`, so a new PR head receives the status without waiting for a
+  review or comment event.
+- `pull_request_review`, `pull_request_review_comment`, and `issue_comment`
+  re-evaluate when review state changes.
+- `pull_request_review_thread` re-evaluates when a thread is resolved or
+  unresolved. Resolving a thread does not send any of the review or comment
+  events above.
+- `workflow_run` re-evaluates when any other workflow completes, because a long
+  CI run can finish after the gate's wait ends. The `!Review Thread Resolution`
+  pattern keeps the gate from re-triggering on its own runs, and the shared job
+  also skips a `workflow_run` event from its own caller file.
+- `check_suite` re-evaluates when a GitHub App other than GitHub Actions (Cursor
+  Bugbot, CodeRabbit, GitGuardian, and similar) completes its checks. GitHub
+  does not send `check_suite` for suites that GitHub Actions created.
+- `status` re-evaluates when another service posts a commit status. Statuses
+  that this workflow publishes with `GITHUB_TOKEN` do not start workflow runs,
+  so the gate does not re-trigger itself.
+- `schedule` refreshes every open PR as a fallback.
+- `workflow_dispatch` refreshes one PR, or every open PR when `pr_number` is
+  empty. Only this event honors the `wait_for_other_checks` input; every other
+  event waits for the other checks.
+
+`workflow_run`, `check_suite`, and `status` run from the template on the
+default branch. `workflow_run` and `check_suite` re-evaluate the first PR in
+the event's `pull_requests` list, and `status` re-evaluates the open PR whose
+head is the event's commit. Events for fork PRs or commits without a PR are
+skipped.
+
+### Status
 
 The status reflects both the review state and the other checks on the PR head:
 
@@ -90,80 +122,55 @@ other conclusion (`failure`, `cancelled`, `timed_out`, `action_required`,
 `stale`, `startup_failure`) does not pass. A commit status passes only when its
 state is `success`; `pending` and `expected` count as running, and `failure` and
 `error` do not pass. The gate ignores its own status context, the check runs of
-the review-thread workflows by job name, the jobs of its own workflow run, and
-any name listed in `extra_excluded_check_names`.
-
-The gate only sees checks that have already reported on the PR head. When it
-runs before CI has queued its jobs, or when a path filter skips a whole
-workflow, nothing reports and the gate cannot tell. List the checks that must
-always report in `expected_check_names`. The gate stays `pending` until each
-one reports. A name matches a full check run name, the job part after the last
-` / `, or a commit status context.
-
-```yaml
-with:
-  expected_check_names: |
-    Unit Test
-    Lint
-```
+the review-thread workflows by job name, and the jobs of its own workflow run.
 
 A run waits for the other checks before it evaluates (up to 60 polls, or 3 for
-`workflow_dispatch`). If checks are still running when the wait ends, the run
-publishes `pending` instead of guessing, and a later run settles the status.
-Scheduled and manual refresh-all runs do not wait, but they still publish
-`pending` or `failure` from the other checks.
+`workflow_dispatch`), and stops waiting as soon as one of them fails. If checks
+are still running when the wait ends, the run publishes `pending` instead of
+guessing, and a later run settles the status. Scheduled and manual refresh-all
+runs do not wait, but they still publish `pending` or `failure` from the other
+checks.
 
-Because a long CI run can finish after the gate's wait ends, the example
-re-evaluates the gate when other work completes:
+The gate only sees checks that have already reported on the PR head. GitHub
+Actions creates the check runs of every workflow that an event starts while
+those jobs are still queued, so a gate run started by the same event sees them.
+A check that a GitHub App or another service reports later is not visible until
+it reports; its report then re-evaluates the gate through `check_suite` or
+`status`.
 
-- `workflow_run` fires when the listed workflows complete. Replace `[CI]` with
-  the names of the caller's own CI workflows, and do not list this workflow.
-  GitHub runs `workflow_run` from the workflow file on the default branch.
-- `check_suite` fires when a GitHub App other than GitHub Actions (Cursor
-  Bugbot, CodeRabbit, and similar) completes its checks. GitHub does not send
-  `check_suite` for suites that GitHub Actions created, which is why
-  `workflow_run` is also needed. Like `workflow_run`, it runs from the default
-  branch.
-- `schedule` refreshes every open PR as a fallback.
+### Branch protection
 
-`workflow_run` and `check_suite` re-evaluate the first PR in the event's
-`pull_requests` list. Fork PRs are not listed there, so those events skip them.
+Require the synthetic status context `Check unresolved comments`. Because it
+requires the other checks to pass, it can be the only required check. Refresh
+runs publish that context but do not fail the workflow job for unresolved review
+state or for other checks. Concurrent refresh runs use per-run concurrency
+groups so GitHub Actions does not cancel older pending refresh jobs.
 
-Statuses that this workflow publishes with `GITHUB_TOKEN` do not start new
-workflow runs, so the gate does not re-trigger itself.
+### CI gate mode
 
-For branch protection, prefer requiring only the synthetic status context
-`Check unresolved comments`, because it already requires the other checks to
-pass. Event-driven refresh runs publish that context but do not fail the
-workflow job for unresolved review state or for other checks, and concurrent refresh
-runs use per-run concurrency groups so GitHub Actions does not cancel older
-pending refresh jobs. This keeps the synthetic status as the only branch
-protection signal while avoiding cancelled refresh check-runs on the PR head.
+A repository that requires an aggregate CI job instead of this status can call
+the shared workflow from its CI workflow with `wait_for_other_checks: "false"`.
+In that mode, unresolved review state fails the reusable workflow job so the
+aggregate job can depend on it. The job result ignores the other checks, so the
+aggregate job does not wait on itself. A CI gate run cannot see the other jobs
+of its own run, so it publishes `pending` instead of `success`, and the
+template's runs settle `success` after CI completes.
 
-CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
-unresolved review state still fails the reusable workflow job so a caller's
-aggregate `CI Success` job can depend on it. The job result ignores the other
-checks, so the aggregate job does not wait on itself. The published status
-still includes the checks of other workflow runs. A CI gate run cannot see the
-other jobs of its own run, so it publishes `pending` instead of `success`, and
-an event-driven run settles `success` after CI completes.
+Do not require both. When the aggregate job depends on a CI gate job that failed
+for review state, the aggregate job stays failed after the threads are
+resolved, and the synthetic status reports it as a failed check until CI runs
+again.
 
-When a repository uses both modes, the aggregate job fails whenever the CI gate
-job fails for review state. Resolving the threads later does not re-run it, so
-add the aggregate job to `extra_excluded_check_names` of the event-driven caller:
-
-```yaml
-with:
-  extra_excluded_check_names: |
-    CI Success
-```
+### Ignored bot reports
 
 Top-level bot report comments and review summaries can be excluded from the
 acknowledgement gate with newline-separated literal substrings. The default
 `ignored_auto_report_patterns` covers CodeRabbit, Renovate notifications,
-Codecov reports, Cursor Bugbot summaries, and Devin Review summaries. Add a
-stable HTML marker or unique text with `extra_ignored_auto_report_patterns` when
-a caller adopts another review bot:
+Codecov reports, Cursor Bugbot summaries, and Devin Review summaries. When a
+repository adopts another review bot, add a stable HTML marker or unique text to
+the defaults in this repository, so the caller template stays the same
+everywhere. The `extra_ignored_auto_report_patterns` input exists for callers
+outside the template:
 
 ```yaml
 with:
@@ -171,8 +178,9 @@ with:
     <!-- another-review-bot-summary -->
 ```
 
-For generic text that could appear in a human review comment, use
-`extra_ignored_auto_report_author_patterns` instead. Each line is
+For generic text that could appear in a human review comment, add an
+author-scoped pattern instead (`ignored_auto_report_author_patterns`, or
+`extra_ignored_auto_report_author_patterns` outside the template). Each line is
 `author-login<TAB>literal-substring`, and bot logins are normalized without the
 trailing `[bot]` suffix:
 

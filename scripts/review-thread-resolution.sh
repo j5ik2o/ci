@@ -1,9 +1,8 @@
 set -euo pipefail
 
 REPOSITORY="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
-BASE_BRANCH="${BASE_BRANCH:-main}"
+BASE_BRANCH="${BASE_BRANCH:-}"
 REQUIRED_CONTEXT="${REQUIRED_CONTEXT:-Check unresolved comments}"
-WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-1}"
 PUBLISH_STATUS="${PUBLISH_STATUS:-1}"
 SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
 EVENT_NAME="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
@@ -21,9 +20,21 @@ EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PA
 if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" ]]; then
   IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"$'\n'"${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"
 fi
-EXTRA_EXCLUDED_CHECK_NAMES="${EXTRA_EXCLUDED_CHECK_NAMES:-}"
-EXPECTED_CHECK_NAMES="${EXPECTED_CHECK_NAMES:-}"
+WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-}"
 
+event_field() {
+  if [[ -z "${GITHUB_EVENT_PATH:-}" || ! -f "$GITHUB_EVENT_PATH" ]]; then
+    printf '\n'
+    return 0
+  fi
+  jq -r "$1 | if . == null then \"\" else tostring end" "$GITHUB_EVENT_PATH"
+}
+
+# Only a manual run may turn the wait off through its own input; every other
+# event waits unless a caller passes wait_for_other_checks explicitly.
+if [[ -z "$WAIT_FOR_OTHER_CHECKS" && "$EVENT_NAME" == "workflow_dispatch" ]]; then
+  WAIT_FOR_OTHER_CHECKS="$(event_field '.inputs.wait_for_other_checks?')"
+fi
 case "$WAIT_FOR_OTHER_CHECKS" in
   false|False|FALSE) WAIT_FOR_OTHER_CHECKS=0 ;;
   *) WAIT_FOR_OTHER_CHECKS=1 ;;
@@ -48,6 +59,10 @@ if [[ -z "$REPOSITORY" || "$REPOSITORY" != */* ]]; then
   exit 1
 fi
 
+if [[ -z "$BASE_BRANCH" ]]; then
+  BASE_BRANCH="$(event_field '.repository.default_branch?')"
+fi
+
 OWNER="${REPOSITORY%%/*}"
 REPO="${REPOSITORY#*/}"
 
@@ -60,6 +75,10 @@ require_command() {
 
 require_command gh
 require_command jq
+
+if [[ -z "$BASE_BRANCH" ]]; then
+  BASE_BRANCH="$(gh api "repos/$OWNER/$REPO" --jq '.default_branch')"
+fi
 
 bool_is_true() {
   case "${1:-}" in
@@ -84,7 +103,9 @@ resolve_pr_number() {
   jq -r '
     def url_number($url):
       ($url // "" | split("/")[-1]);
-    if (.pull_request.number? // null) != null then
+    if ((.inputs.pr_number? // "") | tostring | length) > 0 then
+      (.inputs.pr_number | tostring)
+    elif (.pull_request.number? // null) != null then
       (.pull_request.number | tostring)
     elif (.issue.pull_request? // null) != null and (.issue.number? // null) != null then
       (.issue.number | tostring)
@@ -100,6 +121,24 @@ resolve_pr_number() {
       ""
     end
   ' "$GITHUB_EVENT_PATH"
+}
+
+resolve_pr_number_for_status_event() {
+  local sha
+  local context
+
+  [[ "$EVENT_NAME" == "status" ]] || return 0
+  context="$(event_field '.context?')"
+  if [[ "$context" == "$REQUIRED_CONTEXT" ]]; then
+    return 0
+  fi
+  sha="$(event_field '.sha?')"
+  [[ -n "$sha" ]] || return 0
+  gh api \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "repos/$OWNER/$REPO/commits/$sha/pulls" \
+    | jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""'
 }
 
 event_is_non_pr_issue_comment() {
@@ -171,21 +210,12 @@ fetch_other_check_states() {
   jq -n -c \
     --arg required_context "$REQUIRED_CONTEXT" \
     --arg current_run_id "${GITHUB_RUN_ID:-}" \
-    --arg extra_excluded_check_names "$EXTRA_EXCLUDED_CHECK_NAMES" \
-    --arg expected_check_names "$EXPECTED_CHECK_NAMES" \
     --argjson check_run_pages "$check_runs_response" \
     --argjson status_pages "$status_response" '
-      def name_list($text):
-        $text | split("\n") | map(sub("^\\s+"; "") | sub("\\s+$"; "")) | map(select(length > 0));
-      def job_name:
-        split(" / ")[-1];
-      def matches_name($names):
-        . as $name | any($names[]; . == $name or . == ($name | job_name));
       def excluded_check_name:
         (.name // "") as $name
-        | ($name | job_name) as $job_name
-        | ($name | matches_name(name_list($extra_excluded_check_names)))
-        or $name == $required_context
+        | ($name | split(" / ")[-1]) as $job_name
+        | $name == $required_context
           or $job_name == $required_context
           or $name == "Refresh review-thread state"
           or $job_name == "Refresh review-thread state"
@@ -213,10 +243,6 @@ fetch_other_check_states() {
 
       [$check_run_pages[]?.check_runs[]?] as $check_runs
       | [$status_pages[]?.statuses[]?] as $statuses
-      | (
-          [$check_runs[] | .name // ""]
-          + [$statuses[] | .context // ""]
-        ) as $seen_names
       | [
           $check_runs[]
           | select((excluded_check_name | not) and (current_workflow_run | not))
@@ -232,18 +258,10 @@ fetch_other_check_states() {
           | .[]
           | max_by(.updated_at // .created_at // "")
           | select((.context // "") != $required_context)
-          | select({name: (.context // "")} | excluded_check_name | not)
           | {
               state: commit_status_state,
               label: "status: \(.context // "unknown") [\(.state // "unknown")]"
             }
-        ]
-        +
-        [
-          name_list($expected_check_names)[]
-          | . as $expected
-          | select(any($seen_names[]; . == $expected or (job_name == $expected)) | not)
-          | {state: "pending", label: "expected: \($expected) [not reported yet]"}
         ]
     '
 }
@@ -351,6 +369,11 @@ wait_for_checks() {
     pending_checks="$(check_labels_in_state "$other_checks" pending)"
     if [[ -z "$pending_checks" ]]; then
       echo "All other PR checks have reached a terminal state."
+      return 0
+    fi
+    if [[ -n "$(check_labels_in_state "$other_checks" failure)" ]]; then
+      echo "Another PR check already failed; evaluating without waiting for the rest:"
+      echo "$pending_checks"
       return 0
     fi
 
@@ -963,6 +986,9 @@ run_single_pr() {
 
 main() {
   PR_NUMBER="$(resolve_pr_number)"
+  if [[ -z "$PR_NUMBER" ]]; then
+    PR_NUMBER="$(resolve_pr_number_for_status_event)"
+  fi
 
   if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
     if [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -973,7 +999,7 @@ main() {
       echo "Skipping non-PR issue_comment event."
       return 0
     fi
-    if [[ "$EVENT_NAME" == "workflow_run" || "$EVENT_NAME" == "check_suite" ]]; then
+    if [[ "$EVENT_NAME" == "workflow_run" || "$EVENT_NAME" == "check_suite" || "$EVENT_NAME" == "status" ]]; then
       echo "Skipping $EVENT_NAME event without a same-repository pull request."
       return 0
     fi

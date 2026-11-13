@@ -2,7 +2,7 @@ name: Review Thread Resolution
 description: Evaluate unresolved review threads and unacknowledged top-level PR comments.
 inputs:
   pr_number:
-    description: PR number to refresh. Leave empty to refresh all open PRs for base_branch.
+    description: PR number to refresh. Leave empty to read it from the event (including the workflow_dispatch input pr_number), or to refresh all open PRs on schedule and workflow_dispatch.
     required: false
     default: ""
   repository:
@@ -10,23 +10,15 @@ inputs:
     required: false
     default: ${{ github.repository }}
   base_branch:
-    description: Base branch to evaluate.
+    description: Base branch to evaluate. Leave empty to use the repository default branch.
     required: false
-    default: main
+    default: ""
   required_context:
     description: Commit status context published for branch protection.
     required: false
     default: Check unresolved comments
   wait_for_other_checks:
-    description: Wait for other PR checks before evaluating review threads.
-    required: false
-    default: "true"
-  extra_excluded_check_names:
-    description: Newline-separated check run names, job names, or commit status contexts that the gate ignores, such as an aggregate CI job that depends on a CI gate job.
-    required: false
-    default: ""
-  expected_check_names:
-    description: Newline-separated check run names, job names, or commit status contexts that must report on the PR head. The gate stays pending until each one reports.
+    description: Wait for other PR checks before evaluating review threads. Leave empty to wait on every event except a workflow_dispatch whose own wait_for_other_checks input is false.
     required: false
     default: ""
   publish_status:
@@ -78,8 +70,6 @@ runs:
         BASE_BRANCH: ${{ inputs.base_branch }}
         REQUIRED_CONTEXT: ${{ inputs.required_context }}
         WAIT_FOR_OTHER_CHECKS: ${{ inputs.wait_for_other_checks }}
-        EXTRA_EXCLUDED_CHECK_NAMES: ${{ inputs.extra_excluded_check_names }}
-        EXPECTED_CHECK_NAMES: ${{ inputs.expected_check_names }}
         PUBLISH_STATUS: ${{ inputs.publish_status }}
         SKIP_STATUS_FOR_DEPENDABOT: ${{ inputs.skip_status_for_dependabot }}
         IGNORED_AUTO_REPORT_PATTERNS: ${{ inputs.ignored_auto_report_patterns }}

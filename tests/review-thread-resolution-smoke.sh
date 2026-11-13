@@ -55,12 +55,16 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/check-runs"* ]]; then
     pending) unit_test='"status":"in_progress","conclusion":null' ;;
     *) unit_test="\"status\":\"completed\",\"conclusion\":\"${GH_OTHER_CHECK:-success}\"" ;;
   esac
-  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
+  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},{"name":"ci / Build","status":"completed","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/461"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
   exit 0
 fi
 
 if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/status"* ]]; then
-  printf '%s\n' '{"statuses":[{"context":"Check unresolved comments","state":"failure","updated_at":"2026-06-02T00:00:00Z"},{"context":"CI Success","state":"pending","updated_at":"2026-06-01T00:00:00Z"},{"context":"CI Success","state":"'"${GH_OTHER_STATUS:-success}"'","updated_at":"2026-06-02T00:00:00Z"}]}'
+  if [[ "${GH_FAIL_STATUS_INACCESSIBLE:-0}" == "1" ]]; then
+    echo "HTTP 403: Resource not accessible by integration" >&2
+    exit 1
+  fi
+  printf '%s\n' '[{"statuses":[{"context":"Check unresolved comments","state":"failure","updated_at":"2026-06-02T00:00:00Z"},{"context":"CI Success","state":"pending","updated_at":"2026-06-01T00:00:00Z"},{"context":"CI Success","state":"'"${GH_OTHER_STATUS:-success}"'","updated_at":"2026-06-02T00:00:00Z"},{"context":"Aggregate CI","state":"failure","updated_at":"2026-06-02T00:00:00Z"}]}]'
   exit 0
 fi
 
@@ -96,6 +100,7 @@ run_script() {
   PUBLISH_STATUS="true" \
   SKIP_STATUS_FOR_DEPENDABOT="false" \
   EXTRA_IGNORED_AUTO_REPORT_PATTERNS="<!-- another-review-bot-summary -->" \
+  EXTRA_EXCLUDED_CHECK_NAMES="${SMOKE_EXCLUDED-Aggregate CI}" \
   EVENT_NAME="$1" \
   WAIT_FOR_OTHER_CHECKS="$2" \
   PR_NUMBER="${SMOKE_PR_NUMBER-27}" \
@@ -188,6 +193,31 @@ fi
 reset_logs
 GH_OTHER_CHECK=failure run_script "workflow_dispatch" "true" "1"
 expect_state failure "review state and a failing other check must publish failure."
+
+reset_logs
+SMOKE_EXCLUDED="" run_script "pull_request" "true"
+expect_state failure "a failing status that is not excluded must publish failure."
+
+reset_logs
+run_script "pull_request" "false"
+expect_state pending "CI gate mode cannot see its own run and must not publish success."
+
+reset_logs
+EXPECTED_CHECK_NAMES=$'Build\n  CI Success  ' run_script "pull_request" "true"
+expect_state success "expected checks that reported, matched by job name or status context, must not block."
+
+reset_logs
+EXPECTED_CHECK_NAMES="Integration Test" run_script "pull_request" "true"
+expect_state pending "an expected check that has not reported yet must publish pending."
+
+reset_logs
+GH_FAIL_STATUS_INACCESSIBLE=1 run_script "pull_request" "true"
+expect_state pending "unreadable other checks must publish pending."
+
+printf '%s\n' '{"check_suite":{"pull_requests":[{"number":27}]}}' > "$tmpdir/check-suite-event.json"
+reset_logs
+SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/check-suite-event.json" run_script "check_suite" "true"
+expect_state success "a check_suite event must re-evaluate its pull request."
 
 printf '%s\n' '{"workflow_run":{"pull_requests":[{"number":27}]}}' > "$tmpdir/workflow-run-event.json"
 reset_logs

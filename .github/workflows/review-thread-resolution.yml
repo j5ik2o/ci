@@ -80,7 +80,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: ${{ inputs.wait_for_other_checks == 'false' && format('review-thread-resolution-ci-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id) || format('review-thread-resolution-event-{0}', github.run_id) }}
+  group: ${{ inputs.wait_for_other_checks == 'false' && github.workflow != 'Review Thread Resolution' && format('review-thread-resolution-ci-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id) || format('review-thread-resolution-event-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:

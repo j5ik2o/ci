@@ -227,14 +227,14 @@ if [[ -s "$tmpdir/sleeps.log" ]]; then
   exit 1
 fi
 
-printf '%s\n' '{"pull_request":{"number":27},"repository":{"default_branch":"main"}}' > "$tmpdir/thread-event.json"
+printf '%s\n' '{"pull_request":{"number":27},"repository":{"default_branch":"main"}}' > "$tmpdir/review-event.json"
 reset_logs
-SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/thread-event.json" run_script "pull_request_review_thread" ""
-expect_state success "a pull_request_review_thread event must re-evaluate its pull request on the default branch."
+SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/review-event.json" run_script "pull_request_review" ""
+expect_state success "a pull_request_review event must re-evaluate its pull request on the default branch."
 
 printf '%s\n' '{"pull_request":{"number":27},"repository":{"default_branch":"develop"}}' > "$tmpdir/other-default-event.json"
 reset_logs
-SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/other-default-event.json" run_script "pull_request_review_thread" ""
+SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/other-default-event.json" run_script "pull_request_review" ""
 if [[ -s "$tmpdir/status-payloads.log" ]]; then
   echo "an empty base_branch must default to the repository default branch." >&2
   exit 1

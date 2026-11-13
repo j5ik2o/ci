@@ -4,25 +4,25 @@ on:
   workflow_call:
     inputs:
       pr_number:
-        description: PR number to refresh. Leave empty to refresh all open PRs for base_branch.
+        description: PR number to refresh. Leave empty to read it from the event (including the workflow_dispatch input pr_number), or to refresh all open PRs on schedule and workflow_dispatch.
         required: false
         type: string
         default: ""
       base_branch:
-        description: Base branch to evaluate.
+        description: Base branch to evaluate. Leave empty to use the repository default branch.
         required: false
         type: string
-        default: main
+        default: ""
       required_context:
         description: Commit status context published for branch protection.
         required: false
         type: string
         default: Check unresolved comments
       wait_for_other_checks:
-        description: Wait for other PR checks before evaluating review threads.
+        description: Wait for other PR checks before evaluating review threads. Leave empty to wait on every event except a workflow_dispatch whose own wait_for_other_checks input is false.
         required: false
         type: string
-        default: "true"
+        default: ""
       publish_status:
         description: Publish the synthetic commit status on same-repository PR heads.
         required: false
@@ -80,11 +80,12 @@ permissions:
   statuses: write
 
 concurrency:
-  group: ${{ inputs.wait_for_other_checks == 'false' && format('review-thread-resolution-ci-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id) || format('review-thread-resolution-event-{0}', github.run_id) }}
+  group: ${{ inputs.wait_for_other_checks == 'false' && github.workflow != 'Review Thread Resolution' && format('review-thread-resolution-ci-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id) || format('review-thread-resolution-event-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   unresolved-comments:
+    if: github.event_name != 'workflow_run' || !startsWith(github.workflow_ref, format('{0}/{1}@', github.repository, github.event.workflow_run.path))
     name: ${{ inputs.wait_for_other_checks == 'false' && 'Evaluate CI review-thread gate' || 'Refresh review-thread state' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -51,12 +51,42 @@ if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/check-runs"* ]]; then
     echo "check-runs endpoint should not be called" >&2
     exit 1
   fi
-  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"in_progress","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},{"name":"Unit Test","status":"completed","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
+  case "${GH_OTHER_CHECK:-success}" in
+    pending) unit_test='"status":"in_progress","conclusion":null' ;;
+    *) unit_test="\"status\":\"completed\",\"conclusion\":\"${GH_OTHER_CHECK:-success}\"" ;;
+  esac
+  current_run_sibling=""
+  if [[ "${GH_CURRENT_RUN_SIBLING:-0}" == "1" ]]; then
+    current_run_sibling='{"name":"Current run job","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/123/job/459"},'
+  fi
+  printf '%s\n' '[{"check_runs":[{"name":"refresh / Refresh review-thread state","status":"in_progress","conclusion":null,"details_url":"https://github.com/j5ik2o/g2g/actions/runs/125/job/456"},{"name":"ci-gate / CI Review Thread Gate","status":"completed","conclusion":"failure","details_url":"https://github.com/j5ik2o/g2g/actions/runs/126/job/458"},'"$current_run_sibling"'{"name":"Slow Test","status":"'"${GH_SLOW_TEST_STATUS:-completed}"'","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/127/job/462"},{"name":"ci / Build","status":"completed","conclusion":"success","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/461"},{"name":"Lint","status":"completed","conclusion":"skipped","details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/460"},{"name":"Unit Test",'"$unit_test"',"details_url":"https://github.com/j5ik2o/g2g/actions/runs/124/job/457"}]}]'
+  exit 0
+fi
+
+if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/pulls"* ]]; then
+  case "${GH_STATUS_PULLS:-open}" in
+    none) printf '%s\n' '[{"number":26,"state":"closed","head":{"sha":"head-sha"}}]'; exit 0 ;;
+    fail) echo "HTTP 502" >&2; exit 1 ;;
+    garbled) echo "<html>bad gateway</html>"; exit 0 ;;
+    flaky)
+      count="$(cat "$GH_FLAKY_COUNT" 2>/dev/null || echo 0)"
+      echo "$((count + 1))" > "$GH_FLAKY_COUNT"
+      if [[ "$count" -lt 2 ]]; then
+        echo "HTTP 502" >&2
+        exit 1
+      fi
+      ;;
+  esac
+  printf '%s\n' '[{"number":26,"state":"closed","head":{"sha":"head-sha"}},{"number":27,"state":"open","head":{"sha":"head-sha"}}]'
   exit 0
 fi
 
 if [[ "$args" == *"repos/j5ik2o/g2g/commits/head-sha/status"* ]]; then
-  printf '%s\n' '{"statuses":[{"context":"Check unresolved comments","state":"pending","updated_at":"2026-06-02T00:00:00Z"},{"context":"CI Success","state":"success","updated_at":"2026-06-02T00:00:00Z"}]}'
+  if [[ "${GH_FAIL_STATUS_INACCESSIBLE:-0}" == "1" ]]; then
+    echo "HTTP 403: Resource not accessible by integration" >&2
+    exit 1
+  fi
+  printf '%s\n' '[{"statuses":[{"context":"Check unresolved comments","state":"failure","updated_at":"2026-06-02T00:00:00Z"},{"context":"CI Success","state":"pending","updated_at":"2026-06-01T00:00:00Z"},{"context":"CI Success","state":"'"${GH_OTHER_STATUS:-success}"'","updated_at":"2026-06-02T00:00:00Z"}]}]'
   exit 0
 fi
 
@@ -87,14 +117,14 @@ run_script() {
   GH_STATUS_PAYLOAD_LOG="$tmpdir/status-payloads.log" \
   PATH="$tmpdir/bin:$PATH" \
   REPOSITORY="j5ik2o/g2g" \
-  BASE_BRANCH="main" \
+  BASE_BRANCH="${SMOKE_BASE-main}" \
   REQUIRED_CONTEXT="Check unresolved comments" \
   PUBLISH_STATUS="true" \
   SKIP_STATUS_FOR_DEPENDABOT="false" \
   EXTRA_IGNORED_AUTO_REPORT_PATTERNS="<!-- another-review-bot-summary -->" \
   EVENT_NAME="$1" \
   WAIT_FOR_OTHER_CHECKS="$2" \
-  PR_NUMBER="27" \
+  PR_NUMBER="${SMOKE_PR_NUMBER-27}" \
   GITHUB_RUN_ID="123" \
     bash "$root/scripts/review-thread-resolution.sh"
 }
@@ -125,16 +155,209 @@ if ! grep -q '"state": "failure"' "$tmpdir/status-payloads.log"; then
   exit 1
 fi
 
-: > "$tmpdir/calls.log"
-: > "$tmpdir/sleeps.log"
-: > "$tmpdir/status-payloads.log"
-GH_FAIL_CHECK_RUNS=1 run_script "workflow_dispatch" "false"
-if grep -q 'check-runs' "$tmpdir/calls.log"; then
-  echo "wait_for_other_checks=false must not fetch check-runs." >&2
-  exit 1
-fi
+reset_logs() {
+  : > "$tmpdir/calls.log"
+  : > "$tmpdir/sleeps.log"
+  : > "$tmpdir/status-payloads.log"
+}
+
+expect_state() {
+  local expected="$1"
+  local message="$2"
+  local actual
+
+  actual="$(jq -r '.state' "$tmpdir/status-payloads.log" | tail -n 1)"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "$message (expected $expected, got ${actual:-none})" >&2
+    exit 1
+  fi
+}
+
+reset_logs
+run_script "workflow_dispatch" "false"
 if [[ -s "$tmpdir/sleeps.log" ]]; then
   echo "wait_for_other_checks=false must not wait." >&2
+  exit 1
+fi
+if ! grep -q 'check-runs' "$tmpdir/calls.log"; then
+  echo "the gate must read other checks even when it does not wait for them." >&2
+  exit 1
+fi
+expect_state success "green other checks and no review state must publish success."
+
+for conclusion in failure cancelled timed_out action_required; do
+  reset_logs
+  GH_OTHER_CHECK="$conclusion" run_script "pull_request" "true"
+  expect_state failure "an other check concluding $conclusion must publish failure."
+done
+
+reset_logs
+GH_OTHER_CHECK=failure GH_SLOW_TEST_STATUS=in_progress run_script "pull_request" "true"
+expect_state failure "a failed other check must publish failure while another is still running."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "a failed other check must end the wait early." >&2
+  exit 1
+fi
+
+reset_logs
+GH_OTHER_CHECK=neutral run_script "pull_request" "true"
+expect_state success "a neutral other check must count as passing."
+
+reset_logs
+GH_OTHER_STATUS=error run_script "pull_request" "true"
+expect_state failure "a failing commit status from another context must publish failure."
+
+reset_logs
+GH_OTHER_CHECK=failure run_script "workflow_dispatch" "false"
+expect_state failure "wait_for_other_checks=false must still publish failure for a failing other check."
+
+reset_logs
+GH_OTHER_CHECK=pending run_script "workflow_dispatch" "true"
+expect_state pending "an other check still running after the wait must publish pending."
+if [[ "$(wc -l < "$tmpdir/sleeps.log")" -ne 2 ]]; then
+  echo "workflow_dispatch must wait three attempts before publishing pending." >&2
+  exit 1
+fi
+
+reset_logs
+GH_OTHER_CHECK=failure run_script "workflow_dispatch" "true" "1"
+expect_state failure "review state and a failing other check must publish failure."
+
+reset_logs
+GH_CURRENT_RUN_SIBLING=1 run_script "pull_request" "false"
+expect_state pending "a run with sibling jobs in its own workflow run (CI gate mode) must not publish success."
+
+reset_logs
+GH_CURRENT_RUN_SIBLING=1 run_script "pull_request" "true"
+expect_state pending "sibling jobs of the current run must block success even when the run waits."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "sibling jobs of the current run must not be waited for." >&2
+  exit 1
+fi
+
+reset_logs
+run_script "pull_request" "false"
+expect_state success "an event run that does not wait and has no sibling jobs must publish success when the other checks passed."
+
+reset_logs
+GH_OTHER_CHECK=pending run_script "pull_request" "false"
+expect_state pending "an event run that does not wait must publish pending while other checks run."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "an event run that does not wait must not poll." >&2
+  exit 1
+fi
+
+reset_logs
+GH_OTHER_CHECK=pending run_script "pull_request" ""
+expect_state pending "an empty wait input must wait on events other than workflow_dispatch."
+if [[ "$(wc -l < "$tmpdir/sleeps.log")" -ne 59 ]]; then
+  echo "an empty wait input must poll 60 times on pull_request." >&2
+  exit 1
+fi
+
+printf '%s\n' '{"inputs":{"pr_number":"27","wait_for_other_checks":"false"}}' > "$tmpdir/dispatch-event.json"
+reset_logs
+GH_OTHER_CHECK=pending SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/dispatch-event.json" run_script "workflow_dispatch" ""
+expect_state pending "workflow_dispatch must read pr_number from its own inputs."
+if [[ -s "$tmpdir/sleeps.log" ]]; then
+  echo "workflow_dispatch must honor its own wait_for_other_checks input." >&2
+  exit 1
+fi
+
+printf '%s\n' '{"pull_request":{"number":27},"repository":{"default_branch":"main"}}' > "$tmpdir/review-event.json"
+reset_logs
+SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/review-event.json" run_script "pull_request_review" ""
+expect_state success "a pull_request_review event must re-evaluate its pull request on the default branch."
+
+printf '%s\n' '{"pull_request":{"number":27},"repository":{"default_branch":"develop"}}' > "$tmpdir/other-default-event.json"
+reset_logs
+SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/other-default-event.json" run_script "pull_request_review" ""
+if [[ -s "$tmpdir/status-payloads.log" ]]; then
+  echo "an empty base_branch must default to the repository default branch." >&2
+  exit 1
+fi
+
+printf '%s\n' '{"sha":"head-sha","context":"Unit Test"}' > "$tmpdir/status-event.json"
+reset_logs
+SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+expect_state success "a status event must re-evaluate the open pull request for its commit."
+
+reset_logs
+GH_STATUS_PULLS=none SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+if [[ -s "$tmpdir/status-payloads.log" ]]; then
+  echo "a status event without an open pull request must be skipped." >&2
+  exit 1
+fi
+
+for pulls in fail garbled; do
+  reset_logs
+  set +e
+  GH_STATUS_PULLS="$pulls" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+  lookup_failure_status=$?
+  set -e
+  if [[ "$lookup_failure_status" -eq 0 ]]; then
+    echo "a status event whose pull request lookup keeps failing ($pulls) must fail the run, not pass as no pull request." >&2
+    exit 1
+  fi
+  if [[ "$(wc -l < "$tmpdir/sleeps.log")" -ne 2 ]]; then
+    echo "a failing pull request lookup ($pulls) must be tried three times before the run fails." >&2
+    exit 1
+  fi
+done
+
+reset_logs
+rm -f "$tmpdir/flaky-count"
+GH_FLAKY_COUNT="$tmpdir/flaky-count" GH_STATUS_PULLS=flaky SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/status-event.json" run_script "status" ""
+expect_state success "a pull request lookup that succeeds on the third try must re-evaluate the gate."
+
+printf '%s\n' '{"pull_request":{"number":27},"inputs":{"pr_number":"99"},"repository":{"default_branch":"main"}}' > "$tmpdir/pr-with-inputs-event.json"
+reset_logs
+SMOKE_BASE="" SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/pr-with-inputs-event.json" run_script "pull_request" "false"
+expect_state success "an automatic base branch must work without waiting, and only workflow_dispatch may read inputs.pr_number."
+
+printf '%s\n' '{"sha":"head-sha","context":"Check unresolved comments"}' > "$tmpdir/own-status-event.json"
+reset_logs
+SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/own-status-event.json" run_script "status" ""
+if [[ -s "$tmpdir/status-payloads.log" ]]; then
+  echo "a status event for the gate's own context must not re-evaluate." >&2
+  exit 1
+fi
+
+reset_logs
+GH_FAIL_STATUS_INACCESSIBLE=1 run_script "pull_request" "true"
+expect_state pending "unreadable other checks must publish pending."
+
+printf '%s\n' '{"check_suite":{"pull_requests":[{"number":27}]}}' > "$tmpdir/check-suite-event.json"
+reset_logs
+SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/check-suite-event.json" run_script "check_suite" "true"
+expect_state success "a check_suite event must re-evaluate its pull request."
+
+printf '%s\n' '{"workflow_run":{"pull_requests":[{"number":27}]}}' > "$tmpdir/workflow-run-event.json"
+reset_logs
+SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/workflow-run-event.json" run_script "workflow_run" "true"
+expect_state success "a workflow_run event must re-evaluate its pull request."
+
+printf '%s\n' '{"workflow_run":{"pull_requests":[]}}' > "$tmpdir/workflow-run-fork-event.json"
+reset_logs
+SMOKE_PR_NUMBER="" GITHUB_EVENT_PATH="$tmpdir/workflow-run-fork-event.json" run_script "workflow_run" "true"
+if [[ -s "$tmpdir/status-payloads.log" ]]; then
+  echo "a workflow_run event without a pull request must not publish a status." >&2
+  exit 1
+fi
+
+reset_logs
+set +e
+run_script "pull_request" "false" "1"
+no_wait_status=$?
+run_script "workflow_dispatch" "true" "1"
+wait_status=$?
+set -e
+if [[ "$no_wait_status" -eq 0 ]]; then
+  echo "a run that does not wait must fail its job for unresolved review state." >&2
+  exit 1
+fi
+if [[ "$wait_status" -ne 0 ]]; then
+  echo "a run that waits must keep its job green for unresolved review state." >&2
   exit 1
 fi
 

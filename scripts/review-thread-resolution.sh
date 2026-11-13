@@ -1,9 +1,8 @@
 set -euo pipefail
 
 REPOSITORY="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
-BASE_BRANCH="${BASE_BRANCH:-main}"
+BASE_BRANCH="${BASE_BRANCH:-}"
 REQUIRED_CONTEXT="${REQUIRED_CONTEXT:-Check unresolved comments}"
-WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-1}"
 PUBLISH_STATUS="${PUBLISH_STATUS:-1}"
 SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
 EVENT_NAME="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
@@ -21,7 +20,21 @@ EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PA
 if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" ]]; then
   IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"$'\n'"${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"
 fi
+WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-}"
 
+event_field() {
+  if [[ -z "${GITHUB_EVENT_PATH:-}" || ! -f "$GITHUB_EVENT_PATH" ]]; then
+    printf '\n'
+    return 0
+  fi
+  jq -r "$1 | if . == null then \"\" else tostring end" "$GITHUB_EVENT_PATH"
+}
+
+# Only a manual run may turn the wait off through its own input; every other
+# event waits unless a caller passes wait_for_other_checks explicitly.
+if [[ -z "$WAIT_FOR_OTHER_CHECKS" && "$EVENT_NAME" == "workflow_dispatch" ]]; then
+  WAIT_FOR_OTHER_CHECKS="$(event_field '.inputs.wait_for_other_checks?')"
+fi
 case "$WAIT_FOR_OTHER_CHECKS" in
   false|False|FALSE) WAIT_FOR_OTHER_CHECKS=0 ;;
   *) WAIT_FOR_OTHER_CHECKS=1 ;;
@@ -40,6 +53,10 @@ if [[ -z "$REPOSITORY" || "$REPOSITORY" != */* ]]; then
   exit 1
 fi
 
+if [[ -z "$BASE_BRANCH" ]]; then
+  BASE_BRANCH="$(event_field '.repository.default_branch?')"
+fi
+
 OWNER="${REPOSITORY%%/*}"
 REPO="${REPOSITORY#*/}"
 
@@ -52,6 +69,10 @@ require_command() {
 
 require_command gh
 require_command jq
+
+if [[ -z "$BASE_BRANCH" ]]; then
+  BASE_BRANCH="$(gh api "repos/$OWNER/$REPO" --jq '.default_branch')"
+fi
 
 bool_is_true() {
   case "${1:-}" in
@@ -73,10 +94,12 @@ resolve_pr_number() {
     return 0
   fi
 
-  jq -r '
+  jq -r --arg event_name "$EVENT_NAME" '
     def url_number($url):
       ($url // "" | split("/")[-1]);
-    if (.pull_request.number? // null) != null then
+    if $event_name == "workflow_dispatch" and ((.inputs.pr_number? // "") | tostring | length) > 0 then
+      (.inputs.pr_number | tostring)
+    elif (.pull_request.number? // null) != null then
       (.pull_request.number | tostring)
     elif (.issue.pull_request? // null) != null and (.issue.number? // null) != null then
       (.issue.number | tostring)
@@ -84,10 +107,50 @@ resolve_pr_number() {
       url_number(.review.pull_request_url)
     elif ((.comment.pull_request_url? // "") | length) > 0 then
       url_number(.comment.pull_request_url)
+    elif ((.workflow_run.pull_requests? // []) | length) > 0 then
+      (.workflow_run.pull_requests[0].number | tostring)
+    elif ((.check_suite.pull_requests? // []) | length) > 0 then
+      (.check_suite.pull_requests[0].number | tostring)
     else
       ""
     end
   ' "$GITHUB_EVENT_PATH"
+}
+
+resolve_pr_number_for_status_event() {
+  local sha
+  local context
+
+  [[ "$EVENT_NAME" == "status" ]] || return 0
+  context="$(event_field '.context?')"
+  if [[ "$context" == "$REQUIRED_CONTEXT" ]]; then
+    return 0
+  fi
+  sha="$(event_field '.sha?')"
+  [[ -n "$sha" ]] || return 0
+  local attempt
+  local pulls
+  local number
+
+  for attempt in 1 2 3; do
+    if pulls="$(
+      gh api \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "repos/$OWNER/$REPO/commits/$sha/pulls?per_page=100"
+    )" && number="$(
+      jq -r --arg sha "$sha" '[.[] | select(.state == "open" and .head.sha == $sha)][0].number // ""' <<< "$pulls"
+    )"; then
+      printf '%s\n' "$number"
+      return 0
+    fi
+    echo "::warning::Failed to look up the pull request for status event commit $sha (attempt $attempt)." >&2
+    if [[ "$attempt" -lt 3 ]]; then
+      sleep $((attempt * 5))
+    fi
+  done
+  echo "::error::Could not look up the pull request for status event commit $sha; the gate was not re-evaluated." >&2
+  return 1
 }
 
 event_is_non_pr_issue_comment() {
@@ -133,7 +196,7 @@ fetch_pr_head_oid() {
     --jq '.head.sha // ""'
 }
 
-fetch_pending_check_names() {
+fetch_other_check_states() {
   local head_ref_oid="$1"
   local check_runs_response
   local status_response
@@ -151,14 +214,16 @@ fetch_pending_check_names() {
     gh api \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      "repos/$OWNER/$REPO/commits/$head_ref_oid/status"
+      --paginate \
+      --slurp \
+      "repos/$OWNER/$REPO/commits/$head_ref_oid/status?per_page=100"
   )" || return 1
 
-  jq -n -r \
+  jq -n -c \
     --arg required_context "$REQUIRED_CONTEXT" \
     --arg current_run_id "${GITHUB_RUN_ID:-}" \
     --argjson check_run_pages "$check_runs_response" \
-    --argjson status_response "$status_response" '
+    --argjson status_pages "$status_response" '
       def excluded_check_name:
         (.name // "") as $name
         | ($name | split(" / ")[-1]) as $job_name
@@ -177,26 +242,50 @@ fetch_pending_check_names() {
       def current_workflow_run:
         ($current_run_id | length) > 0
         and ((.details_url // "") | contains("/actions/runs/" + $current_run_id + "/"));
+      def check_run_state:
+        if (.status // "") != "completed" then "pending"
+        elif ((.conclusion // "") | IN("success", "skipped", "neutral")) then "success"
+        else "failure"
+        end;
+      def commit_status_state:
+        if (.state // "") == "success" then "success"
+        elif ((.state // "") | IN("pending", "expected")) then "pending"
+        else "failure"
+        end;
 
-      (
-        [
-          $check_run_pages[]?.check_runs[]?
-          | select((excluded_check_name | not) and (current_workflow_run | not))
-          | select((.status // "") != "completed")
-          | "check: \(.name // "unknown") [\(.status // "unknown")]"
+      [$check_run_pages[]?.check_runs[]?] as $check_runs
+      | [$status_pages[]?.statuses[]?] as $statuses
+      | [
+          $check_runs[]
+          | select(excluded_check_name | not)
+          | if current_workflow_run then
+              # Sibling jobs of a CI gate run: waiting on them would deadlock an
+              # aggregate job that needs this one, so they only block success.
+              {state: "own_run", label: "check: \(.name // "unknown") [same workflow run]"}
+            else
+              {
+                state: check_run_state,
+                label: "check: \(.name // "unknown") [\(.conclusion // .status // "unknown")]"
+              }
+            end
         ]
         +
         [
-          ($status_response.statuses // [])
+          $statuses
           | group_by(.context // "")
           | .[]
           | max_by(.updated_at // .created_at // "")
           | select((.context // "") != $required_context)
-          | select((.state // "") == "pending" or (.state // "") == "expected")
-          | "status: \(.context // "unknown") [\(.state // "unknown")]"
+          | {
+              state: commit_status_state,
+              label: "status: \(.context // "unknown") [\(.state // "unknown")]"
+            }
         ]
-      )[]
     '
+}
+
+check_labels_in_state() {
+  jq -r --arg state "$2" '.[] | select(.state == $state) | .label' <<< "$1"
 }
 
 error_is_resource_inaccessible() {
@@ -211,6 +300,7 @@ wait_for_checks() {
   local max_sleep_seconds=30
   local attempt=0
   local current_head_ref_oid
+  local other_checks
   local pending_checks
   local error_file
 
@@ -231,7 +321,7 @@ wait_for_checks() {
 
     if ! current_head_ref_oid="$(fetch_pr_head_oid "$pr_number" 2> "$error_file")"; then
       if error_is_resource_inaccessible "$error_file"; then
-        echo "::notice::Unable to inspect PR head because GitHub token cannot access a resource; evaluating review-thread state without waiting for other checks."
+        echo "::notice::Unable to inspect PR head because GitHub token cannot access a resource; skipping the wait for other checks."
         cat "$error_file" >&2
         rm -f "$error_file"
         return 0
@@ -267,9 +357,9 @@ wait_for_checks() {
     fi
 
     error_file="$(mktemp)"
-    if ! pending_checks="$(fetch_pending_check_names "$current_head_ref_oid" 2> "$error_file")"; then
+    if ! other_checks="$(fetch_other_check_states "$current_head_ref_oid" 2> "$error_file")"; then
       if error_is_resource_inaccessible "$error_file"; then
-        echo "::notice::Unable to inspect other PR checks because GitHub token cannot access a check resource; evaluating review-thread state without waiting."
+        echo "::notice::Unable to inspect other PR checks because GitHub token cannot access a check resource; skipping the wait for other checks."
         cat "$error_file" >&2
         rm -f "$error_file"
         return 0
@@ -294,20 +384,21 @@ wait_for_checks() {
     fi
     rm -f "$error_file"
 
+    pending_checks="$(check_labels_in_state "$other_checks" pending)"
     if [[ -z "$pending_checks" ]]; then
       echo "All other PR checks have reached a terminal state."
       return 0
     fi
+    if [[ -n "$(check_labels_in_state "$other_checks" failure)" ]]; then
+      echo "Another PR check already failed; evaluating without waiting for the rest:"
+      echo "$pending_checks"
+      return 0
+    fi
 
     if [[ "$attempt" -eq "$max_attempts" ]]; then
-      if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "schedule" ]]; then
-        echo "::notice::Other PR checks are still pending; refreshing review-thread state without waiting."
-        echo "$pending_checks"
-        return 0
-      fi
-      echo "::error::Timed out waiting for other PR checks to finish before evaluating review comments."
-      echo "$pending_checks" >&2
-      return 1
+      echo "::notice::Other PR checks are still pending after $max_attempts attempts; the gate will report pending until a later run sees them finish."
+      echo "$pending_checks"
+      return 0
     fi
 
     echo "Waiting for other PR checks to finish before evaluating review comments:"
@@ -325,6 +416,7 @@ wait_for_checks() {
 publish_status() {
   local head_ref_oid="$1"
   local state="$2"
+  local description="$3"
   local payload
   local response
   local error_file
@@ -337,7 +429,7 @@ publish_status() {
     jq -n \
       --arg state "$state" \
       --arg target_url "$RUN_URL" \
-      --arg description "Review-thread gate ${state}." \
+      --arg description "${description:0:140}" \
       --arg context "$REQUIRED_CONTEXT" \
       '{
         state: $state,
@@ -673,6 +765,12 @@ build_summary() {
   local unresolved="$3"
   local unacknowledged="$4"
   local pr_url="$5"
+  local other_checks="$6"
+  local failing_checks
+  local pending_checks
+
+  failing_checks="$(check_labels_in_state "$other_checks" failure)"
+  pending_checks="$(check_labels_in_state "$other_checks" pending)"
 
   {
     echo "PR: $pr_url"
@@ -689,6 +787,19 @@ build_summary() {
       echo "### Unacknowledged top-level PR comments or review summaries"
       echo
       jq -r '.[] | "- by \(.author.login // "unknown") updated at \((.updatedAt // .createdAt)): \(.url // "no comment URL")"' <<< "$unacknowledged"
+      echo
+    fi
+    if [[ -n "$failing_checks" ]]; then
+      echo "### Other PR checks that did not pass"
+      echo
+      sed 's/^/- /' <<< "$failing_checks"
+      echo
+    fi
+    if [[ -n "$pending_checks" ]]; then
+      echo "### Other PR checks still running"
+      echo
+      sed 's/^/- /' <<< "$pending_checks"
+      echo
     fi
   }
 }
@@ -708,6 +819,13 @@ check_pr() {
   local top_level_comments
   local unacknowledged
   local unacknowledged_count
+  local other_checks
+  local failing_count
+  local pending_count
+  local own_run_count
+  local gate_state
+  local gate_description
+  local error_file
   local summary
   local can_publish_status=1
 
@@ -769,7 +887,41 @@ check_pr() {
     echo "No unacknowledged top-level PR comments or review summaries for PR #$pr_number."
   fi
 
-  summary="$(build_summary "$unresolved_count" "$unacknowledged_count" "$unresolved" "$unacknowledged" "$pr_url")"
+  error_file="$(mktemp)"
+  if ! other_checks="$(fetch_other_check_states "$head_ref_oid" 2> "$error_file")"; then
+    if ! error_is_resource_inaccessible "$error_file"; then
+      echo "::error::Failed to fetch other PR checks for PR #$pr_number."
+      cat "$error_file" >&2
+      rm -f "$error_file"
+      return 1
+    fi
+    echo "::notice::GitHub token cannot read the other PR checks; the gate cannot confirm them and will report pending."
+    cat "$error_file" >&2
+    other_checks='[{"state":"pending","label":"other checks: unreadable (Resource not accessible by integration)"}]'
+  fi
+  rm -f "$error_file"
+  failing_count="$(jq '[.[] | select(.state == "failure")] | length' <<< "$other_checks")"
+  pending_count="$(jq '[.[] | select(.state == "pending")] | length' <<< "$other_checks")"
+  own_run_count="$(jq '[.[] | select(.state == "own_run")] | length' <<< "$other_checks")"
+
+  if [[ "$unresolved_count" -gt 0 || "$unacknowledged_count" -gt 0 ]]; then
+    gate_state=failure
+    gate_description="$unresolved_count unresolved thread(s), $unacknowledged_count unacknowledged comment(s); $failing_count other check(s) failed, $pending_count running."
+  elif [[ "$failing_count" -gt 0 ]]; then
+    gate_state=failure
+    gate_description="No unresolved review state; $failing_count other check(s) did not pass."
+  elif [[ "$pending_count" -gt 0 ]]; then
+    gate_state=pending
+    gate_description="No unresolved review state; waiting for $pending_count other check(s)."
+  elif [[ "$own_run_count" -gt 0 ]]; then
+    gate_state=pending
+    gate_description="No unresolved review state; $own_run_count job(s) of this workflow run are settled by a later run."
+  else
+    gate_state=success
+    gate_description="No unresolved review state; all other checks passed."
+  fi
+
+  summary="$(build_summary "$unresolved_count" "$unacknowledged_count" "$unresolved" "$unacknowledged" "$pr_url" "$other_checks")"
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     printf '%s\n\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
   else
@@ -784,16 +936,19 @@ check_pr() {
     can_publish_status=0
   fi
 
+  if [[ "$can_publish_status" -eq 1 ]]; then
+    publish_status "$head_ref_oid" "$gate_state" "$gate_description" || return 1
+  fi
+
   if [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
-    if [[ "$can_publish_status" -eq 1 ]]; then
-      publish_status "$head_ref_oid" success || return 1
+    if [[ "$failing_count" -gt 0 ]]; then
+      echo "::error::$failing_count other PR check(s) did not pass on PR #$pr_number; the gate reports failure."
+    elif [[ "$pending_count" -gt 0 ]]; then
+      echo "::notice::$pending_count other PR check(s) are still running on PR #$pr_number; the gate reports pending."
     fi
     return 0
   fi
 
-  if [[ "$can_publish_status" -eq 1 ]]; then
-    publish_status "$head_ref_oid" failure || return 1
-  fi
   echo "::error::$unresolved_count unresolved PR review thread(s) and $unacknowledged_count unacknowledged top-level PR comment(s) or review summary comment(s) remain on PR #$pr_number."
   return 2
 }
@@ -851,6 +1006,9 @@ run_single_pr() {
 
 main() {
   PR_NUMBER="$(resolve_pr_number)"
+  if [[ -z "$PR_NUMBER" ]]; then
+    PR_NUMBER="$(resolve_pr_number_for_status_event)" || return 1
+  fi
 
   if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
     if [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -859,6 +1017,10 @@ main() {
     fi
     if event_is_non_pr_issue_comment; then
       echo "Skipping non-PR issue_comment event."
+      return 0
+    fi
+    if [[ "$EVENT_NAME" == "workflow_run" || "$EVENT_NAME" == "check_suite" || "$EVENT_NAME" == "status" ]]; then
+      echo "Skipping $EVENT_NAME event without a same-repository pull request."
       return 0
     fi
     echo "::error::Unable to resolve PR number from $EVENT_NAME event."

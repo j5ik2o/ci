@@ -49,7 +49,7 @@ on:
     types: [completed]
   status:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       pr_number:
@@ -90,12 +90,15 @@ Each trigger has one job:
 - `status` re-evaluates when another service posts a commit status. Statuses
   that this workflow publishes with `GITHUB_TOKEN` do not start workflow runs,
   so the gate does not re-trigger itself.
-- `schedule` refreshes every open PR. It is also the only trigger that sees a
-  resolved or unresolved review thread: GitHub Actions has no event for thread
-  resolution, and a workflow that lists `pull_request_review_thread` under `on:`
-  is rejected as an invalid workflow file. After a thread is resolved, the
-  status changes at the next scheduled run, or at the next review, comment, or
-  push event.
+- `schedule` refreshes every open PR once a day, at 18:17 UTC. It is also the
+  only trigger that sees a resolved or unresolved review thread. GitHub Actions
+  has no event for thread resolution, and it rejects a workflow that lists
+  `pull_request_review_thread` under `on:` as an invalid workflow file.
+- After the last thread is resolved, the status stays `failure` until the next
+  run. That run comes from the next review, comment, push, completed workflow,
+  or app check, or from a manual `workflow_dispatch` with the PR number.
+  Without any of these, it comes from the daily schedule, up to about a day
+  later.
 - `workflow_dispatch` refreshes one PR, or every open PR when `pr_number` is
   empty. Only this event honors the `wait_for_other_checks` input; every other
   event waits for the other checks.

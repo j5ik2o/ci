@@ -24,6 +24,8 @@ publishes a synthetic commit status named `Check unresolved comments` by default
 name: Review Thread Resolution
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
@@ -55,11 +57,18 @@ jobs:
       pull-requests: read
     with:
       pr_number: ${{ inputs.pr_number }}
-      wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
+      wait_for_other_checks: ${{ (github.event_name != 'workflow_dispatch' || inputs.wait_for_other_checks) && 'true' || 'false' }}
       base_branch: main
       required_context: Check unresolved comments
       ci_ref: v1
 ```
+
+The `pull_request` trigger covers `opened`, `synchronize`, `reopened`, and
+`ready_for_review` so that a new PR head also receives the synthetic status
+context instead of relying on later review or comment events. The
+`wait_for_other_checks` expression only honors the manual input on
+`workflow_dispatch` runs, because `inputs.*` is empty for every other event
+type; all other runs wait for the other PR checks.
 
 For branch protection, prefer requiring the synthetic status context
 `Check unresolved comments`. Event-driven refresh runs publish that context but

@@ -1,0 +1,42 @@
+name: Review Thread Resolution
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    workflows: ["**", "!Review Thread Resolution"]
+    types: [completed]
+  check_suite:
+    types: [completed]
+  status:
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to refresh. Leave empty to refresh all open PRs.
+        required: false
+        type: string
+      wait_for_other_checks:
+        description: Wait for other PR checks before evaluating review threads.
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  refresh:
+    uses: ./.github/workflows/review-thread-resolution.yml
+    permissions:
+      contents: read
+      checks: write
+      statuses: write
+      issues: read
+      pull-requests: read
+    with:
+      wait_for_other_checks: ${{ github.event_name == 'workflow_dispatch' && inputs.wait_for_other_checks || 'false' }}

@@ -21,11 +21,19 @@ EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PA
 if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" ]]; then
   IGNORED_AUTO_REPORT_AUTHOR_PATTERNS="${IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"$'\n'"${EXTRA_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS}"
 fi
+EXTRA_EXCLUDED_CHECK_NAMES="${EXTRA_EXCLUDED_CHECK_NAMES:-}"
+EXPECTED_CHECK_NAMES="${EXPECTED_CHECK_NAMES:-}"
 
 case "$WAIT_FOR_OTHER_CHECKS" in
   false|False|FALSE) WAIT_FOR_OTHER_CHECKS=0 ;;
   *) WAIT_FOR_OTHER_CHECKS=1 ;;
 esac
+# A CI gate caller runs inside its own CI workflow run, whose sibling jobs are
+# excluded to avoid waiting on itself, so it cannot vouch for a success.
+CI_GATE_MODE=0
+if [[ "$WAIT_FOR_OTHER_CHECKS" -eq 0 && "$EVENT_NAME" != "workflow_dispatch" && "$EVENT_NAME" != "schedule" ]]; then
+  CI_GATE_MODE=1
+fi
 case "$PUBLISH_STATUS" in
   false|False|FALSE) PUBLISH_STATUS=0 ;;
   *) PUBLISH_STATUS=1 ;;
@@ -155,18 +163,29 @@ fetch_other_check_states() {
     gh api \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      "repos/$OWNER/$REPO/commits/$head_ref_oid/status"
+      --paginate \
+      --slurp \
+      "repos/$OWNER/$REPO/commits/$head_ref_oid/status?per_page=100"
   )" || return 1
 
   jq -n -c \
     --arg required_context "$REQUIRED_CONTEXT" \
     --arg current_run_id "${GITHUB_RUN_ID:-}" \
+    --arg extra_excluded_check_names "$EXTRA_EXCLUDED_CHECK_NAMES" \
+    --arg expected_check_names "$EXPECTED_CHECK_NAMES" \
     --argjson check_run_pages "$check_runs_response" \
-    --argjson status_response "$status_response" '
+    --argjson status_pages "$status_response" '
+      def name_list($text):
+        $text | split("\n") | map(sub("^\\s+"; "") | sub("\\s+$"; "")) | map(select(length > 0));
+      def job_name:
+        split(" / ")[-1];
+      def matches_name($names):
+        . as $name | any($names[]; . == $name or . == ($name | job_name));
       def excluded_check_name:
         (.name // "") as $name
-        | ($name | split(" / ")[-1]) as $job_name
-        | $name == $required_context
+        | ($name | job_name) as $job_name
+        | ($name | matches_name(name_list($extra_excluded_check_names)))
+        or $name == $required_context
           or $job_name == $required_context
           or $name == "Refresh review-thread state"
           or $job_name == "Refresh review-thread state"
@@ -192,26 +211,40 @@ fetch_other_check_states() {
         else "failure"
         end;
 
-      [
-        $check_run_pages[]?.check_runs[]?
-        | select((excluded_check_name | not) and (current_workflow_run | not))
-        | {
-            state: check_run_state,
-            label: "check: \(.name // "unknown") [\(.conclusion // .status // "unknown")]"
-          }
-      ]
-      +
-      [
-        ($status_response.statuses // [])
-        | group_by(.context // "")
-        | .[]
-        | max_by(.updated_at // .created_at // "")
-        | select((.context // "") != $required_context)
-        | {
-            state: commit_status_state,
-            label: "status: \(.context // "unknown") [\(.state // "unknown")]"
-          }
-      ]
+      [$check_run_pages[]?.check_runs[]?] as $check_runs
+      | [$status_pages[]?.statuses[]?] as $statuses
+      | (
+          [$check_runs[] | .name // ""]
+          + [$statuses[] | .context // ""]
+        ) as $seen_names
+      | [
+          $check_runs[]
+          | select((excluded_check_name | not) and (current_workflow_run | not))
+          | {
+              state: check_run_state,
+              label: "check: \(.name // "unknown") [\(.conclusion // .status // "unknown")]"
+            }
+        ]
+        +
+        [
+          $statuses
+          | group_by(.context // "")
+          | .[]
+          | max_by(.updated_at // .created_at // "")
+          | select((.context // "") != $required_context)
+          | select({name: (.context // "")} | excluded_check_name | not)
+          | {
+              state: commit_status_state,
+              label: "status: \(.context // "unknown") [\(.state // "unknown")]"
+            }
+        ]
+        +
+        [
+          name_list($expected_check_names)[]
+          | . as $expected
+          | select(any($seen_names[]; . == $expected or (job_name == $expected)) | not)
+          | {state: "pending", label: "expected: \($expected) [not reported yet]"}
+        ]
     '
 }
 
@@ -837,6 +870,9 @@ check_pr() {
   elif [[ "$pending_count" -gt 0 ]]; then
     gate_state=pending
     gate_description="No unresolved review state; waiting for $pending_count other check(s)."
+  elif [[ "$CI_GATE_MODE" -eq 1 ]]; then
+    gate_state=pending
+    gate_description="No unresolved review state; a refresh run that sees the whole CI run reports success."
   else
     gate_state=success
     gate_description="No unresolved review state; all other checks passed."

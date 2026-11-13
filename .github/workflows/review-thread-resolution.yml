@@ -23,6 +23,16 @@ on:
         required: false
         type: string
         default: "true"
+      extra_excluded_check_names:
+        description: Newline-separated check run names, job names, or commit status contexts that the gate ignores, such as an aggregate CI job that depends on a CI gate job.
+        required: false
+        type: string
+        default: ""
+      expected_check_names:
+        description: Newline-separated check run names, job names, or commit status contexts that must report on the PR head. The gate stays pending until each one reports.
+        required: false
+        type: string
+        default: ""
       publish_status:
         description: Publish the synthetic commit status on same-repository PR heads.
         required: false
@@ -105,6 +115,8 @@ jobs:
           base_branch: ${{ inputs.base_branch }}
           required_context: ${{ inputs.required_context }}
           wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
+          extra_excluded_check_names: ${{ inputs.extra_excluded_check_names }}
+          expected_check_names: ${{ inputs.expected_check_names }}
           publish_status: ${{ inputs.publish_status }}
           skip_status_for_dependabot: ${{ inputs.skip_status_for_dependabot }}
           ignored_auto_report_patterns: ${{ inputs.ignored_auto_report_patterns }}

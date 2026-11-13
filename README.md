@@ -90,7 +90,22 @@ other conclusion (`failure`, `cancelled`, `timed_out`, `action_required`,
 `stale`, `startup_failure`) does not pass. A commit status passes only when its
 state is `success`; `pending` and `expected` count as running, and `failure` and
 `error` do not pass. The gate ignores its own status context, the check runs of
-the review-thread workflows by job name, and the jobs of its own workflow run.
+the review-thread workflows by job name, the jobs of its own workflow run, and
+any name listed in `extra_excluded_check_names`.
+
+The gate only sees checks that have already reported on the PR head. When it
+runs before CI has queued its jobs, or when a path filter skips a whole
+workflow, nothing reports and the gate cannot tell. List the checks that must
+always report in `expected_check_names`. The gate stays `pending` until each
+one reports. A name matches a full check run name, the job part after the last
+` / `, or a commit status context.
+
+```yaml
+with:
+  expected_check_names: |
+    Unit Test
+    Lint
+```
 
 A run waits for the other checks before it evaluates (up to 60 polls, or 3 for
 `workflow_dispatch`). If checks are still running when the wait ends, the run
@@ -111,6 +126,9 @@ re-evaluates the gate when other work completes:
   branch.
 - `schedule` refreshes every open PR as a fallback.
 
+`workflow_run` and `check_suite` re-evaluate the first PR in the event's
+`pull_requests` list. Fork PRs are not listed there, so those events skip them.
+
 Statuses that this workflow publishes with `GITHUB_TOKEN` do not start new
 workflow runs, so the gate does not re-trigger itself.
 
@@ -125,8 +143,20 @@ protection signal while avoiding cancelled refresh check-runs on the PR head.
 CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
 unresolved review state still fails the reusable workflow job so a caller's
 aggregate `CI Success` job can depend on it. The job result ignores the other
-checks, so the aggregate job does not wait on itself, but the published status
-still includes them.
+checks, so the aggregate job does not wait on itself. The published status
+still includes the checks of other workflow runs. A CI gate run cannot see the
+other jobs of its own run, so it publishes `pending` instead of `success`, and
+an event-driven run settles `success` after CI completes.
+
+When a repository uses both modes, the aggregate job fails whenever the CI gate
+job fails for review state. Resolving the threads later does not re-run it, so
+add the aggregate job to `extra_excluded_check_names` of the event-driven caller:
+
+```yaml
+with:
+  extra_excluded_check_names: |
+    CI Success
+```
 
 Top-level bot report comments and review summaries can be excluded from the
 acknowledgement gate with newline-separated literal substrings. The default

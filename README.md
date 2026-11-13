@@ -26,7 +26,9 @@ publishes a synthetic commit status named `Check unresolved comments`.
 Every caller repository uses this file as is, at
 `.github/workflows/review-thread-resolution.yml`. It has no per-repository
 values, so copy it without editing. GitHub Actions reads triggers only from the
-caller file, so the template carries the trigger list and one input. The
+caller file, so the template carries the trigger list and one input. Do not add
+jobs to it: the gate treats other jobs of its own run as unsettled and stays
+`pending`. The
 shared workflow reads everything else from the event payload: the PR number and
 the base branch (the repository default branch).
 
@@ -94,7 +96,9 @@ Each trigger has one job:
   has an `if:` that skips a `workflow_run` event from its own caller file, as a
   backup for a renamed caller. No run has exercised that `if:` yet, because the
   name pattern filters those events first. Each completed workflow and each
-  posted status starts a short gate run.
+  posted status starts a short gate run. These triggers start working only
+  after the template is merged to the default branch. Until then, a PR's status
+  stays `pending` after CI finishes, until a review, comment, or push.
 - `check_suite` re-evaluates when a GitHub App other than GitHub Actions (Cursor
   Bugbot, CodeRabbit, GitGuardian, and similar) completes its checks. GitHub
   does not send `check_suite` for suites that GitHub Actions created.
@@ -162,11 +166,11 @@ it reports; its report then re-evaluates the gate through `check_suite` or
 Require the synthetic status context `Check unresolved comments`. Because it
 requires the other checks to pass, it can be the only required check. Do not
 require the gate's own job. A run that does not wait fails its job for
-unresolved review state. Runs started by `pull_request`, review, and comment
-events for the same PR share one concurrency group, so GitHub Actions cancels a
-pending run when a newer one queues. The latest run
-publishes the status. The gate ignores its own jobs, including cancelled and
-failed ones, by job name.
+unresolved review state. That includes every event run of the template and a
+manual run with `wait_for_other_checks` set to false; a run that waits keeps its
+job green and reports through the status only. Each template run has its own
+concurrency group, so GitHub Actions does not cancel a queued template run. The
+gate ignores its own jobs, including failed ones, by job name.
 
 ### CI gate mode
 
@@ -177,6 +181,11 @@ aggregate job can depend on it. The job result ignores the other checks, so the
 aggregate job does not wait on itself. The other jobs of its own run only block
 `success`, so it publishes `pending` instead, and the template's runs settle
 `success` after CI completes.
+CI gate runs for the same PR share the concurrency group
+`review-thread-resolution-ci-<PR number>`, so GitHub Actions cancels a queued
+CI gate run when a newer one queues. Template runs are never in that group,
+because the group is chosen only when the caller workflow is not named
+`Review Thread Resolution`.
 
 Do not require both. When the aggregate job depends on a CI gate job that failed
 for review state, the aggregate job stays failed after the threads are

@@ -317,4 +317,20 @@ if [[ -s "$tmpdir/status-payloads.log" ]]; then
   exit 1
 fi
 
+reset_logs
+set +e
+run_script "pull_request" "false" "1"
+no_wait_status=$?
+run_script "workflow_dispatch" "true" "1"
+wait_status=$?
+set -e
+if [[ "$no_wait_status" -eq 0 ]]; then
+  echo "a run that does not wait must fail its job for unresolved review state." >&2
+  exit 1
+fi
+if [[ "$wait_status" -ne 0 ]]; then
+  echo "a run that waits must keep its job green for unresolved review state." >&2
+  exit 1
+fi
+
 echo "review-thread-resolution smoke tests passed."

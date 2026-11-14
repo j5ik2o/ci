@@ -82,14 +82,16 @@ all disappear is treated as suspected-stopped rather than fixed.
    "test:aislop": "node scripts/aislop-check-bootstrap.mjs test"
    ```
 
-6. Add `.aislop-check/` to `.gitignore` (the fetch cache).
-
 The bootstrap downloads the two files from
 `raw.githubusercontent.com/j5ik2o/ci/<ref>/aislop/...` (this repository is
 public, so no credentials are needed), verifies each file's SHA-256
-against the pin before use, and caches them under `.aislop-check/<ref>/`.
-With a valid cache it works without network access. A hash mismatch is a
-hard failure and the fetched file is never used.
+against the pin before use, and caches them under
+`node_modules/.aislop-check/<ref>/`. The cache lives under `node_modules`
+on purpose: aislop does not scan `node_modules`, so the fetched canonical
+files cannot produce findings of their own (a repository-root cache was
+measured to fail the check for exactly that reason). With a valid cache
+the bootstrap works without network access. A hash mismatch is a hard
+failure and the fetched file is never used.
 
 ## Versioning
 

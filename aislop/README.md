@@ -23,6 +23,9 @@ anti-empty-pass checks below are mandatory, distribution is canonical
   this file verbatim to `scripts/aislop-check-bootstrap.mjs` and do not
   edit the copy; fixes land here first and are then re-copied, the same
   treatment as the review-thread-resolution caller file.
+- `bootstrap.test.mjs` — the bootstrap's own tests (`node --test`). These
+  run only inside this repository; callers do not copy them and the pin
+  does not cover them.
 - `fixtures/aislop-accepted.json` — a minimal accepted list so the shape
   tests can run inside this repository.
 
@@ -86,7 +89,10 @@ The bootstrap downloads the two files from
 `raw.githubusercontent.com/j5ik2o/ci/<ref>/aislop/...` (this repository is
 public, so no credentials are needed), verifies each file's SHA-256
 against the pin before use, and caches them under
-`node_modules/.aislop-check/<ref>/`. The cache lives under `node_modules`
+`node_modules/.aislop-check/<ref>/`. Cache writes are atomic: the
+verified bytes go to a per-process temporary file in the same directory
+and are then renamed into place, so concurrent `check` / `test` runs
+never read a half-written cache file (issue #21). The cache lives under `node_modules`
 on purpose: aislop does not scan `node_modules`, so the fetched canonical
 files cannot produce findings of their own (a repository-root cache was
 measured to fail the check for exactly that reason). With a valid cache
@@ -95,6 +101,35 @@ failure and the fetched file is never used. Callers that ran an earlier
 bootstrap revision may still have a cache at `.aislop-check/<ref>/` in
 the repository root; delete that directory, because it sits inside the
 scan's scope and its files will fail the check.
+
+## Timeouts (issue #20)
+
+Every layer has an inner deadline so a hung scan cannot outlive its
+caller and accumulate orphan processes across retries:
+
+- The checker's scan: 600 s by default
+  (`AISLOP_CHECK_SCAN_TIMEOUT_MS` overrides). On timeout the scan child
+  is terminated and the checker fails with a timeout message.
+- The bootstrap's whole run: 660 s by default
+  (`AISLOP_CHECK_RUN_TIMEOUT_MS` overrides). This is a budget from the
+  bootstrap's start, fetch time included; the child (the checker or its
+  tests) receives only the time remaining after the fetches, and if no
+  time remains the child is not started at all.
+- The caller's own deadline (a CI step, a verification script) sits
+  outside both and fires last.
+
+Timeouts terminate the whole process tree, not just the direct child:
+each layer starts its child in its own process group and signals the
+group (SIGTERM, then SIGKILL after a grace period). Each layer also
+forwards SIGTERM/SIGINT it receives to its child's group before dying,
+so a caller that terminates the bootstrap still takes the scan down.
+(SIGKILL cannot be intercepted; in that case the remaining layers' own
+deadlines still apply.)
+
+The bootstrap's fetch of the canonical files also has a 60 s timeout.
+The version probes for biome and ruff inside the checker have a 30 s
+timeout; a probe that times out cannot prove a tool absent, so the
+engine is treated as stopped-without-verified-absence and fails.
 
 ## Versioning
 
@@ -108,6 +143,7 @@ request, so every adoption is reviewed with the version it pins.
 
 ```
 node --test aislop/check-aislop.test.mjs
+node --test aislop/bootstrap.test.mjs
 ```
 
 The fixture accepted list is used by default. To run the same tests the

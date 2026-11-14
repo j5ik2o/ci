@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   AISLOP_ENV,
+  SCAN_TIMEOUT_MS,
   TOOL_SPECIFIERS,
   assertBiomeRuns,
   assertReportShape,
@@ -481,24 +482,24 @@ describe("runChecks（main の結線）", () => {
     logFailure: () => {},
   };
   const createDeps = (overrides = {}) => ({ ...baseDeps, ...overrides });
-  it("道具の resolve が失敗したら、道具名を含む Error を投げて終了コード 1 側に回す", () => {
+  it("道具の resolve が失敗したら、道具名を含む Error を投げて終了コード 1 側に回す", async () => {
     const resolve = (s) => { if (s === "oxlint") throw new Error("MODULE_NOT_FOUND"); return "/resolved"; };
-    assert.throws(() => runChecks(createDeps({ resolve })), /道具を解決できません: oxlint/);
+    await assert.rejects(runChecks(createDeps({ resolve })), /道具を解決できません: oxlint/);
   });
-  it("biome の起動が失敗したら throw し、scan へ進まない", () => {
+  it("biome の起動が失敗したら throw し、scan へ進まない", async () => {
     let scanned = false;
     const deps = createDeps({ runBiome: () => ({ status: 1, stderr: "boom" }), runScan: () => ((scanned = true), okScan()) });
-    assert.throws(() => runChecks(deps), /biome を起動できません（終了コード 1）/);
+    await assert.rejects(runChecks(deps), /biome を起動できません（終了コード 1）/);
     assert.equal(scanned, false);
   });
 
-  it("失敗理由が無ければ 0 を返し、成功メッセージを出す", () => {
+  it("失敗理由が無ければ 0 を返し、成功メッセージを出す", async () => {
     const messages = [];
-    assert.equal(runChecks(createDeps({ logSuccess: (m) => messages.push(m) })), 0);
+    assert.equal(await runChecks(createDeps({ logSuccess: (m) => messages.push(m) })), 0);
     assert.match(messages[0], /一致します/);
   });
 
-  it("対象ファイルが 0 件の report では、失敗として 1 を返す", () => {
+  it("対象ファイルが 0 件の report では、失敗として 1 を返す", async () => {
     const failures = [];
     const deps = createDeps({
       runScan: () => ({
@@ -507,7 +508,7 @@ describe("runChecks（main の結線）", () => {
       }),
       logFailure: (m) => failures.push(m),
     });
-    assert.equal(runChecks(deps), 1);
+    assert.equal(await runChecks(deps), 1);
     assert.match(failures[0], /対象ファイルが 0 件/);
   });
 });
@@ -664,6 +665,164 @@ describe("実際の aislop との照合", () => {
       assert.doesNotMatch(run(AISLOP_ENV), /\[telemetry\]/);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scan の制限時間（issue #20）", () => {
+  it("既定は600秒で、AISLOP_CHECK_SCAN_TIMEOUT_MS の正の整数だけで上書きできる", () => {
+    assert.equal(SCAN_TIMEOUT_MS, 600_000);
+    assert.equal(resolveConfig([], {}, "/repo").scanTimeoutMs, 600_000);
+    assert.equal(
+      resolveConfig([], { AISLOP_CHECK_SCAN_TIMEOUT_MS: "1234" }, "/repo")
+        .scanTimeoutMs,
+      1234,
+    );
+    for (const bad of ["abc", "0", "-5", "1.5", ""]) {
+      assert.equal(
+        resolveConfig([], { AISLOP_CHECK_SCAN_TIMEOUT_MS: bad }, "/repo")
+          .scanTimeoutMs,
+        600_000,
+        `AISLOP_CHECK_SCAN_TIMEOUT_MS=${bad} は既定に戻る`,
+      );
+    }
+  });
+
+  it("scan は ETIMEDOUT を、起動失敗ではなく制限時間の失敗として投げる", () => {
+    const error = new Error("spawnSync node ETIMEDOUT");
+    error.code = "ETIMEDOUT";
+    assert.throws(
+      () => scan({ error, stdout: "", stderr: "", status: null }),
+      /制限時間を超えたため、失敗にします/,
+    );
+    const enoent = new Error("spawnSync node ENOENT");
+    enoent.code = "ENOENT";
+    assert.throws(
+      () => scan({ error: enoent, stdout: "", stderr: "", status: null }),
+      /起動できませんでした/,
+    );
+  });
+
+  // 止まった scan を装う偽の aislop 本体の置き場所を作る。偽の本体は、
+  // 寝続ける孫プロセスを起動して、その pid を dist の隣へ書き出す。
+  const createHungFixture = (base) => {
+    const write = (rel, content) => {
+      const target = path.join(base, rel);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, content);
+    };
+    write(
+      "scripts/aislop-accepted.json",
+      JSON.stringify({ engines: ["lint"], missingToolsAllowed: {}, accepted: [] }),
+    );
+    write(
+      "node_modules/aislop/dist/cli.js",
+      [
+        'const { spawn } = require("node:child_process");',
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const gc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });',
+        'fs.writeFileSync(path.join(__dirname, "grandchild.pid"), String(gc.pid));',
+        "setTimeout(() => {}, 30_000);",
+        "",
+      ].join("\n"),
+    );
+    // scan 前の解決確認を通すための道具の置き場所。
+    write("node_modules/oxlint/package.json", '{"name":"oxlint","version":"0.0.0"}');
+    write("node_modules/oxlint/index.js", "");
+    write("node_modules/knip/package.json", '{"name":"knip","version":"0.0.0"}');
+    write("node_modules/knip/index.js", "");
+    write(
+      "node_modules/@biomejs/biome/package.json",
+      '{"name":"@biomejs/biome","version":"0.0.0"}',
+    );
+    write("node_modules/@biomejs/biome/bin/biome", 'console.log("1.0.0");\n');
+    return path.join(base, "node_modules", "aislop", "dist", "grandchild.pid");
+  };
+  // 起動役経由でテストが回るとき、呼び出し側向けの AISLOP_CHECK_* が
+  // 環境に入っている。fixture の既定解決を使わせるため、その3つを外す。
+  const fixtureEnv = (extra) => {
+    const env = { ...process.env };
+    delete env.AISLOP_CHECK_ROOT;
+    delete env.AISLOP_CHECK_ACCEPTED;
+    delete env.AISLOP_CHECK_CLI;
+    return { ...env, ...extra };
+  };
+  const isAlive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitUntilDead = async (pid, limitMs = 5_000) => {
+    const deadline = Date.now() + limitMs;
+    while (isAlive(pid) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return !isAlive(pid);
+  };
+
+  it("止まった scan は制限時間で落ち、孫プロセスも残らない", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "aislop-timeout-"));
+    try {
+      const pidFile = createHungFixture(base);
+      const started = Date.now();
+      const result = spawnSync(
+        process.execPath,
+        [path.join(here, "check-aislop.mjs"), "--root", base],
+        {
+          encoding: "utf8",
+          timeout: 15_000,
+          env: fixtureEnv({ AISLOP_CHECK_SCAN_TIMEOUT_MS: "300" }),
+        },
+      );
+      const elapsed = Date.now() - started;
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /制限時間を超えたため、失敗にします/);
+      assert.ok(
+        elapsed < 10_000,
+        `制限時間300ミリ秒に対し ${elapsed} ミリ秒かかった`,
+      );
+      const grandchildPid = Number(readFileSync(pidFile, "utf8"));
+      assert.ok(
+        await waitUntilDead(grandchildPid),
+        `孫プロセス ${grandchildPid} が制限時間の後も残っている`,
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("検査が SIGTERM を受けたら、scan の孫プロセスも残らない", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "aislop-sigterm-"));
+    try {
+      const pidFile = createHungFixture(base);
+      const checker = spawn(
+        process.execPath,
+        [path.join(here, "check-aislop.mjs"), "--root", base],
+        {
+          env: fixtureEnv({ AISLOP_CHECK_SCAN_TIMEOUT_MS: "30000" }),
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      const closed = new Promise((r) => checker.on("close", r));
+      // 孫プロセスの pid が書かれるまで待ってから、検査へ SIGTERM を送る。
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(pidFile) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(existsSync(pidFile), "偽の scan が孫プロセスを起動しなかった");
+      const grandchildPid = Number(readFileSync(pidFile, "utf8"));
+      checker.kill("SIGTERM");
+      await closed;
+      assert.ok(
+        await waitUntilDead(grandchildPid),
+        `孫プロセス ${grandchildPid} が SIGTERM の後も残っている`,
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 });

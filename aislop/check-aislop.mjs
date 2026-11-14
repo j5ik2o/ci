@@ -47,8 +47,20 @@
  * aislop は既定で利用統計を外（eu.i.posthog.com）へ送り、設定の telemetry.enabled
  * が既定の true のままだと CI=true でも止まらない。外への送信は承認が要るので、
  * aislop を起動するときは AISLOP_ENV で止める。
+ *
+ * scan には内側の制限時間（既定600秒、AISLOP_CHECK_SCAN_TIMEOUT_MS で変更可）を
+ * 設ける。呼び出し側の外側の期限（CI のステップや検証スクリプトのタイムアウト）
+ * より先に内側が終わる形にし、外側が起動役ごと終了しても scan のプロセスが
+ * 残り続けないようにするためである（issue #20）。起動役（bootstrap）側の
+ * 子プロセスにも制限時間（既定660秒）があり、内側から順に 600秒・660秒・
+ * 呼び出し側の期限、の順で発火する。
+ * 制限時間の超過時は、直接の子だけでなくプロセスツリーごと終了する。scan は
+ * 専用プロセスグループで起動し、超過時はグループ全体へ終了信号を送る
+ * （猶予の後に強制終了）。この検査自身が SIGTERM や SIGINT を受けたときも、
+ * scan のグループを終了してから死ぬ。SIGKILL は受け取れないため、その場合は
+ * scan が残る余地がある（起動役側も同じ構造で、検査のグループごと終了する）。
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -72,6 +84,23 @@ export const AISLOP_ENV = {
   AISLOP_NO_TELEMETRY: "1",
   AISLOP_NO_UPDATE_NOTIFIER: "1",
 };
+
+/**
+ * scan の制限時間の既定（ミリ秒）。呼び出し側の外側の期限より先に内側が
+ * 終わるように置く内側の期限で、起動役の子プロセスの制限時間（660秒）と
+ * 呼び出し側の期限（例：690秒）の内側に収まる順序にする。
+ */
+export const SCAN_TIMEOUT_MS = 600_000;
+/** 道具の版確認（biome --version、ruff --version）の制限時間（ミリ秒）。 */
+const PROBE_TIMEOUT_MS = 30_000;
+/** プロセスツリーへ終了信号を送ってから、強制終了まで待つ猶予（ミリ秒）。 */
+const TREE_KILL_GRACE_MS = 3_000;
+
+/** ミリ秒指定の環境変数を読む。正の整数でなければ既定を返す。 */
+function timeoutFromEnv(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 /**
  * 起動引数と環境変数から、ルートと受け入れ一覧と aislop 本体の場所を決める。
@@ -102,7 +131,11 @@ export function resolveConfig(argv = [], env = {}, cwd = process.cwd()) {
       env.AISLOP_CHECK_CLI ??
       path.join("node_modules", "aislop", "dist", "cli.js"),
   );
-  return { root, acceptedPath, aislopCli };
+  const scanTimeoutMs = timeoutFromEnv(
+    env.AISLOP_CHECK_SCAN_TIMEOUT_MS,
+    SCAN_TIMEOUT_MS,
+  );
+  return { root, acceptedPath, aislopCli, scanTimeoutMs };
 }
 
 const keyOf = ({ engine, rule, file, message }) =>
@@ -321,11 +354,101 @@ export function checkReport(list, report, probeTool) {
 }
 
 /**
- * `spawnSync` の結果を受け取り、report を返すか理由付きで投げる。
+ * 子プロセスを専用プロセスグループで起動し、結果を spawnSync の結果と
+ * 同じ形（error / stdout / stderr / status）で返す。制限時間を超えたら、
+ * 直接の子だけでなくグループ全体へ終了信号を送り、猶予の後に強制終了
+ * する（scan が起動した道具も同じグループにいる）。この検査自身が
+ * SIGTERM や SIGINT を受けたときも、グループを終了してから同じ信号で
+ * 死ぬ。Windows ではプロセスグループが無いため、直接の子だけを終了する。
+ */
+export function spawnScan(command, args, { cwd, env, timeoutMs, maxBuffer }) {
+  return new Promise((resolvePromise) => {
+    const useGroup = process.platform !== "win32";
+    const child = spawn(command, args, { cwd, env, detached: useGroup });
+    let stdout = "";
+    let stderr = "";
+    let failure = null;
+    let settled = false;
+    let killTimer = null;
+    const killTree = (signal) => {
+      if (useGroup && child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // グループへ送れなければ、直接の子だけでも終了する。
+        }
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // 終了済みなら何もしない。
+      }
+    };
+    const onSigterm = () => forward("SIGTERM");
+    const onSigint = () => forward("SIGINT");
+    const forward = (signal) => {
+      killTree("SIGKILL");
+      process.removeListener("SIGTERM", onSigterm);
+      process.removeListener("SIGINT", onSigint);
+      process.kill(process.pid, signal);
+    };
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      process.removeListener("SIGTERM", onSigterm);
+      process.removeListener("SIGINT", onSigint);
+      resolvePromise(result);
+    };
+    const timer = setTimeout(() => {
+      failure = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), {
+        code: "ETIMEDOUT",
+      });
+      killTree("SIGTERM");
+      killTimer = setTimeout(() => killTree("SIGKILL"), TREE_KILL_GRACE_MS);
+    }, timeoutMs);
+    process.on("SIGTERM", onSigterm);
+    process.on("SIGINT", onSigint);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (!failure && stdout.length + stderr.length > maxBuffer) {
+        failure = Object.assign(new Error("spawn output exceeded maxBuffer"), {
+          code: "ENOBUFS",
+        });
+        killTree("SIGKILL");
+      }
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      finish({ error: failure ?? error, stdout, stderr, status: null });
+    });
+    child.on("close", (status) => {
+      if (failure) {
+        finish({ error: failure, stdout, stderr, status: null });
+      } else {
+        finish({ stdout, stderr, status });
+      }
+    });
+  });
+}
+
+/**
+ * 起動の結果を受け取り、report を返すか理由付きで投げる。
  * 起動をここで行わないのは、起動結果を差し替えて失敗の終端をテストできるようにするため。
  */
 export function scan(result) {
   if (result.error) {
+    if (result.error.code === "ETIMEDOUT") {
+      throw new Error(
+        "aislop の scan が制限時間を超えたため、失敗にします。scan が止まっている可能性があります。制限時間は AISLOP_CHECK_SCAN_TIMEOUT_MS で変更できます（既定は600秒です）。",
+      );
+    }
     throw new Error(`aislop を起動できませんでした: ${result.error.message}`);
   }
   let report;
@@ -345,6 +468,11 @@ export function scan(result) {
  * 起動をここで行わないのは、起動結果を差し替えて失敗の終端をテストできるようにするため。
  */
 export function assertBiomeRuns(result) {
+  if (result.error) {
+    throw new Error(
+      `biome を起動できません: ${result.error.message}。プラットフォームの本体（@biomejs/cli-${process.platform}-${process.arch} など）が入っていないかもしれません。動かない biome は指摘 0 件で返るので、scan の前に落とします。npm ci をやり直してください。`,
+    );
+  }
   if (result.status !== 0) {
     throw new Error(
       `biome を起動できません（終了コード ${result.status}）。プラットフォームの本体（@biomejs/cli-${process.platform}-${process.arch} など）が入っていないかもしれません。動かない biome は指摘 0 件で返るので、scan の前に落とします。npm ci をやり直してください。\n${result.stderr}`,
@@ -393,9 +521,11 @@ export function createAislopRequire(cliPath) {
  * `main` の中身。一覧の読み込み・道具の resolve・biome と scan の起動・probe を
  * 依存として受け取り、成功なら 0、失敗理由があれば 1 を返す（投げる失敗は
  * そのまま呼び出し元へ伝える）。依存を引数にしているのは、resolve 失敗の
- * throw などの結線を実 I/O なしでテストできるようにするため。
+ * throw などの結線を実 I/O なしでテストできるようにするため。scan の起動は
+ * 非同期（spawnScan）なので、この関数も非同期である。runScan が Promise で
+ * ない結果を返しても、そのまま扱える。
  */
-export function runChecks({
+export async function runChecks({
   readList,
   resolve,
   runBiome,
@@ -413,7 +543,7 @@ export function runChecks({
     );
   }
   assertBiomeRuns(runBiome(resolve(TOOL_SPECIFIERS["@biomejs/biome"])));
-  const report = scan(runScan());
+  const report = scan(await runScan());
   const failures = checkReport(list, report, probeTool);
   if (failures.length === 0) {
     logSuccess(
@@ -430,7 +560,7 @@ export function runChecks({
   return 1;
 }
 
-function main() {
+async function main() {
   const config = resolveConfig(process.argv.slice(2), process.env);
   const requireFromAislop = createAislopRequire(config.aislopCli);
   const resolve = requireFromAislop.resolve;
@@ -441,19 +571,22 @@ function main() {
       spawnSync(
         process.execPath,
         [path.join(path.dirname(biomePackageJson), "bin", "biome"), "--version"],
-        { encoding: "utf8" },
+        { encoding: "utf8", timeout: PROBE_TIMEOUT_MS },
       ),
     runScan: () =>
-      spawnSync(process.execPath, [config.aislopCli, "scan", "--json"], {
+      spawnScan(process.execPath, [config.aislopCli, "scan", "--json"], {
         cwd: config.root,
         env: { ...process.env, ...AISLOP_ENV },
-        encoding: "utf8",
         maxBuffer: 64 * 1024 * 1024,
+        timeoutMs: config.scanTimeoutMs,
       }),
     probeTool: createProbeTool({
       resolve,
       runVersion: (command) =>
-        spawnSync(command, ["--version"], { encoding: "utf8" }),
+        spawnSync(command, ["--version"], {
+          encoding: "utf8",
+          timeout: PROBE_TIMEOUT_MS,
+        }),
     }),
     acceptedLabel: path.relative(config.root, config.acceptedPath),
     logSuccess: (message) => console.log(message),
@@ -466,7 +599,7 @@ if (
   realPath(process.argv[1]) === realPath(fileURLToPath(import.meta.url))
 ) {
   try {
-    process.exit(main());
+    process.exit(await main());
   } catch (error) {
     console.error(error.message);
     process.exit(1);

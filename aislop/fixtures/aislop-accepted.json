@@ -1,0 +1,1 @@
+{"accepted":[{"findings":[{"engine":"lint","file":"scripts/example.py","message":"Example lint message","rule":"lint/example-rule"}],"reason":"テスト用の fixture です。実際のリポジトリでは、指摘を受け入れる理由を群ごとにここへ書きます。"}],"engines":["lint","security"],"missingToolsAllowed":{"ruff":"テスト用の fixture です。実際のリポジトリでは、その道具を導入しない理由をここへ書きます。"}}

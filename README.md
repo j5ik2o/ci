@@ -205,6 +205,20 @@ CI paths:
 - `UNIT_COVERAGE_IS_PR`: `true` for pull request events.
 - `UNIT_COVERAGE_BASE_BRANCH`: branch used for base coverage comparison.
 
+## AISLOP Check
+
+The canonical aislop gate lives in `aislop/`. Caller repositories pin a
+tag (for example `aislop-check-v1`) plus the SHA-256 of the canonical
+files, fetch them with a verbatim copy of `aislop/bootstrap.mjs`, and keep
+only their accepted-findings list locally. The mandatory anti-empty-pass
+checks (zero target files fail; a stopped engine passes only on verified,
+allowed tool absence; every expected engine must appear in the scan
+result) are specified in `aislop/README.md`.
+
+```bash
+node --test aislop/check-aislop.test.mjs
+```
+
 ## Validation
 
 ```bash

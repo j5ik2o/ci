@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -14,6 +23,7 @@ import {
   checkEngines,
   checkReport,
   compareFindings,
+  createAislopRequire,
   createProbeTool,
   findUnresolvableTools,
   resolveConfig,
@@ -197,10 +207,11 @@ describe("createProbeTool", () => {
     assert.equal(present("oxlint"), false);
   });
 
-  it("実行ファイルの道具は、--version が起動できなければ未導入を確認できたことにする", () => {
+  it("実行ファイルの道具は、ファイルが無い（ENOENT）ときだけ未導入を確認できたことにする", () => {
+    const enoent = Object.assign(new Error("spawn ruff ENOENT"), { code: "ENOENT" });
     const absent = createProbeTool({
       resolve: () => "/resolved",
-      runVersion: () => ({ error: new Error("spawn ruff ENOENT") }),
+      runVersion: () => ({ error: enoent }),
     });
     assert.equal(absent("ruff"), true);
     const present = createProbeTool({
@@ -210,12 +221,62 @@ describe("createProbeTool", () => {
     assert.equal(present("ruff"), false);
   });
 
+  it("実行ファイルの道具は、実行権限の不足や起動後の失敗では未導入と見なさない", () => {
+    const eacces = Object.assign(new Error("spawn ruff EACCES"), { code: "EACCES" });
+    const denied = createProbeTool({
+      resolve: () => "/resolved",
+      runVersion: () => ({ error: eacces }),
+    });
+    assert.equal(denied("ruff"), false);
+    const failing = createProbeTool({
+      resolve: () => "/resolved",
+      runVersion: () => ({ status: 1 }),
+    });
+    assert.equal(failing("ruff"), false);
+  });
+
   it("確かめる方法が無い道具は、未導入を確認できないものとして扱う", () => {
     const probe = createProbeTool({
       resolve: () => "/resolved",
       runVersion: () => ({ status: 0 }),
     });
     assert.equal(probe("unknown-tool"), false);
+  });
+});
+
+describe("createAislopRequire", () => {
+  it("aislop がシンボリックリンクでも、実体の隣にある依存を解決できる", (t) => {
+    const base = mkdtempSync(path.join(tmpdir(), "aislop-link-"));
+    try {
+      const realModules = path.join(base, "real", "node_modules");
+      const aislopDist = path.join(realModules, "aislop", "dist");
+      mkdirSync(aislopDist, { recursive: true });
+      writeFileSync(path.join(aislopDist, "cli.js"), "");
+      const oxlintDir = path.join(realModules, "oxlint");
+      mkdirSync(oxlintDir, { recursive: true });
+      writeFileSync(
+        path.join(oxlintDir, "package.json"),
+        JSON.stringify({ name: "oxlint", main: "index.js" }),
+      );
+      writeFileSync(path.join(oxlintDir, "index.js"), "");
+      const linkModules = path.join(base, "link", "node_modules");
+      mkdirSync(linkModules, { recursive: true });
+      try {
+        symlinkSync(
+          path.join(realModules, "aislop"),
+          path.join(linkModules, "aislop"),
+          "dir",
+        );
+      } catch {
+        t.skip("シンボリックリンクを作れない環境のため");
+        return;
+      }
+      const cliViaLink = path.join(linkModules, "aislop", "dist", "cli.js");
+      const resolved = createAislopRequire(cliViaLink).resolve("oxlint");
+      assert.equal(resolved, realpathSync(path.join(oxlintDir, "index.js")));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 

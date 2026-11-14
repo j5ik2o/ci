@@ -354,8 +354,11 @@ export function assertBiomeRuns(result) {
 
 /**
  * 道具の未導入を、検査側が自分で確かめるための probe を作る。
- * Node の道具（TOOL_SPECIFIERS）は aislop の場所からの resolve の成否で、
- * 実行ファイルの道具（EXTERNAL_TOOL_COMMANDS）は `--version` の起動の成否で見る。
+ * Node の道具（TOOL_SPECIFIERS）は aislop の場所からの resolve の成否で見る。
+ * 実行ファイルの道具（EXTERNAL_TOOL_COMMANDS）は `--version` の起動を試し、
+ * ファイルが無い（ENOENT）ときだけ未導入と見なす。実行権限の不足（EACCES）
+ * や、起動できたのに失敗する場合は、その道具が存在しないことの証明には
+ * ならないので、未導入とは見なさない。
  * どちらの方法も無い道具は、未導入を確かめられないものとして false を返す。
  * 戻り値は「未導入を確認できた」ときだけ true。
  */
@@ -371,10 +374,19 @@ export function createProbeTool({ resolve, runVersion }) {
     }
     if (Object.hasOwn(EXTERNAL_TOOL_COMMANDS, tool)) {
       const result = runVersion(EXTERNAL_TOOL_COMMANDS[tool]);
-      return Boolean(result.error) || result.status !== 0;
+      return result.error?.code === "ENOENT";
     }
     return false;
   };
+}
+
+/**
+ * aislop 本体を起点にする require を作る。pnpm のように node_modules/aislop が
+ * シンボリックリンクの構成では、リンクの場所を起点にすると aislop の依存先
+ * （oxlint など、実体の隣に置かれる）へ届かないため、実パスへ直してから作る。
+ */
+export function createAislopRequire(cliPath) {
+  return createRequire(realPath(cliPath));
 }
 
 /**
@@ -420,7 +432,7 @@ export function runChecks({
 
 function main() {
   const config = resolveConfig(process.argv.slice(2), process.env);
-  const requireFromAislop = createRequire(config.aislopCli);
+  const requireFromAislop = createAislopRequire(config.aislopCli);
   const resolve = requireFromAislop.resolve;
   return runChecks({
     readList: () => JSON.parse(readFileSync(config.acceptedPath, "utf8")),

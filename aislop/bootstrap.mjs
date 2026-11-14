@@ -15,9 +15,11 @@
  * ref は j5ik2o/ci のタグ（またはコミット）で、files はその ref における
  * aislop/ 配下のファイルの SHA-256 である。取り寄せたファイルは、必ず
  * このハッシュと照合してから使う。ハッシュが合わなければ落とす。
- * 取り寄せたファイルは .aislop-check/<ref>/ へ置き、次回からはハッシュが
- * 合う限りそれを使う（ネットワークが無くても、キャッシュがあれば動く）。
- * .aislop-check/ は追跡しない（.gitignore へ入れる）。
+ * 取り寄せたファイルは node_modules/.aislop-check/<ref>/ へ置き、次回からは
+ * ハッシュが合う限りそれを使う（ネットワークが無くても、キャッシュがあれば
+ * 動く）。置き場所が node_modules の中なのは、aislop のスキャン対象から
+ * 外れるためである。リポジトリ直下へ置くと、取り寄せた正本ファイル自体が
+ * スキャンの指摘を生み、検査が落ちる。
  *
  * j5ik2o/ci は公開リポジトリなので、取得に認証は要らない。
  */
@@ -81,7 +83,7 @@ async function main() {
       "scripts/aislop-check-pin.json の形が違います（ref と files が要ります）。",
     );
   }
-  const cacheDir = path.join(ROOT, ".aislop-check", pin.ref);
+  const cacheDir = path.join(ROOT, "node_modules", ".aislop-check", pin.ref);
   const checkerPath = await fetchCanonicalFile(
     pin.ref,
     "check-aislop.mjs",

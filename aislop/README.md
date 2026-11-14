@@ -91,7 +91,10 @@ on purpose: aislop does not scan `node_modules`, so the fetched canonical
 files cannot produce findings of their own (a repository-root cache was
 measured to fail the check for exactly that reason). With a valid cache
 the bootstrap works without network access. A hash mismatch is a hard
-failure and the fetched file is never used.
+failure and the fetched file is never used. Callers that ran an earlier
+bootstrap revision may still have a cache at `.aislop-check/<ref>/` in
+the repository root; delete that directory, because it sits inside the
+scan's scope and its files will fail the check.
 
 ## Versioning
 

@@ -355,7 +355,7 @@ describe("制限時間（issue #20）", () => {
   });
 });
 
-describe("猶予の層の順序（プルリクエスト #26 のレビュー指摘）", () => {
+describe("終了の層の順序と全体タイマー（プルリクエスト #26 のレビュー指摘）", () => {
   const isAlive = (pid) => {
     try {
       process.kill(pid, 0);
@@ -464,6 +464,88 @@ describe("猶予の層の順序（プルリクエスト #26 のレビュー指�
       assert.ok(
         await waitUntilDead(grandchildPid),
         `孫プロセス ${grandchildPid} が、起動役の先行した強制終了で残っている`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // 全体タイマーが残る起動役役のプロセスを作る。制限時間と猶予は、
+  // テストごとに変えられるよう引数で受ける。
+  const writeRunner = (dir, timeoutMs) => {
+    const runner = path.join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        `const m = await import(${JSON.stringify(bootstrapUrl)});`,
+        `await m.runPinnedCommand([process.argv[2]], {`,
+        `  cwd: process.cwd(),`,
+        `  env: process.env,`,
+        `  timeoutMs: ${timeoutMs},`,
+        `  graceMs: 3_000,`,
+        `});`,
+      ].join("\n"),
+    );
+    return runner;
+  };
+  const runUntilGrandchild = async (dir, runner, child) => {
+    const proc = spawn(process.execPath, [runner, child], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const closed = new Promise((r) => proc.on("close", r));
+    const pidFile = path.join(dir, "grandchild.pid");
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(pidFile) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(existsSync(pidFile), "子が孫プロセスを起動しなかった");
+    return { proc, closed, grandchildPid: Number(readFileSync(pidFile, "utf8")) };
+  };
+
+  it("信号を転送したら全体タイマーは解除され、子の後始末は中断しない", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "aislop-tree-timer-"));
+    try {
+      const child = writeDelayedChecker(dir);
+      const runner = writeRunner(dir, 800);
+      const { proc, closed, grandchildPid } = await runUntilGrandchild(
+        dir,
+        runner,
+        child,
+      );
+      // 全体タイマー（800ミリ秒）が切れる前に信号を送る。タイマーが
+      // 残っていると、切れ目に SIGTERM が再送され、受け手を外した子が
+      // 既定動作で死んで、1.5秒かかる後始末が中断する。
+      proc.kill("SIGTERM");
+      await closed;
+      assert.ok(
+        await waitUntilDead(grandchildPid),
+        `孫プロセス ${grandchildPid} が、全体タイマーの再送した信号で残っている`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("制限時間の超過の後に信号を受けても、子の後始末は中断しない", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "aislop-tree-timer2-"));
+    try {
+      const child = writeDelayedChecker(dir);
+      const runner = writeRunner(dir, 300);
+      const { proc, closed, grandchildPid } = await runUntilGrandchild(
+        dir,
+        runner,
+        child,
+      );
+      // 制限時間（300ミリ秒）が切れて、子が後始末（1.5秒）を始めた後に
+      // 信号を送る。既に送った SIGTERM を再送すると、受け手を外した子が
+      // 既定動作で死んで後始末が中断する。
+      await new Promise((r) => setTimeout(r, 600));
+      proc.kill("SIGTERM");
+      await closed;
+      assert.ok(
+        await waitUntilDead(grandchildPid),
+        `孫プロセス ${grandchildPid} が、転送の再送した信号で残っている`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

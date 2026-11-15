@@ -40,8 +40,9 @@
  * 自分の後始末（scan のグループの終了）をできるように、即座の強制終了
  * はしない（issue #23）。起動役の猶予（10秒）は検査の猶予（3秒）より
  * 十分長く取り、検査が scan のグループへの強制終了を終える前に、起動役
- * が検査を強制終了してしまうことがないようにする。子の始末が済んでから、
- * 起動役も同じ信号で死ぬ。
+ * が検査を強制終了してしまうことがないようにする。信号を転送したら
+ * 全体タイマーは解除して終了処理を引き継ぎ、転送後の信号の再送で子の
+ * 後始末を中断しない。子の始末が済んでから、起動役も同じ信号で死ぬ。
  * 起動役自身が SIGKILL で死んだ場合は受け取れないが、その場合も検査は
  * 渡された残り時間の中で動き続け、scan は検査の制限時間に縛られる。
  *
@@ -173,7 +174,9 @@ async function fetchCanonicalFile(ref, name, expectedHash, cacheDir, timeoutMs) 
  * （issue #24）。この起動役自身が SIGTERM や SIGINT を受けたときは、受けた
  * 信号をそのまま子のグループへ転送する。検査が自分の後始末（scan の
  * グループの終了）をできるように、即座の強制終了はしない（issue #23）。
- * 子の始末が済んでから、起動役も同じ信号で死ぬ。起動自体に失敗した場合も
+ * 転送を始めたら全体タイマーを解除して終了処理を引き継ぎ、制限時間の
+ * 超過で既に送った信号も再送しない。子の始末が済んでから、起動役も
+ * 同じ信号で死ぬ。起動自体に失敗した場合も
  * 1 を返す。Windows ではプロセスグループが無いため、直接の子だけを終了する。
  */
 export function runPinnedCommand(
@@ -232,7 +235,15 @@ export function runPinnedCommand(
       // 2回目の信号は既定の動作で死ねるよう、受け手を外してから転送する。
       process.removeListener("SIGTERM", onSigterm);
       process.removeListener("SIGINT", onSigint);
-      escalation.signalGroup(signal);
+      // 転送を始めたら全体タイマーを解除し、終了処理を escalation へ
+      // 引き継ぐ。タイマーが残ると、予算の切れ目に SIGTERM が再送され、
+      // 受け手を外した子が既定動作で即死して、子の後始末（scan の
+      // グループの終了）が中断する。制限時間の超過で既に SIGTERM を
+      // 送っている場合も、再送しない。
+      clearTimeout(timer);
+      if (!timedOut) {
+        escalation.signalGroup(signal);
+      }
       escalation.schedule();
       maybeFinish();
     };

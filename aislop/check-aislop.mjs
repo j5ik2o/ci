@@ -56,9 +56,11 @@
  * 呼び出し側の期限、の順で発火する。
  * 制限時間の超過時は、直接の子だけでなくプロセスツリーごと終了する。scan は
  * 専用プロセスグループで起動し、超過時はグループ全体へ終了信号を送る
- * （猶予の後に強制終了）。この検査自身が SIGTERM や SIGINT を受けたときも、
- * scan のグループを終了してから死ぬ。SIGKILL は受け取れないため、その場合は
- * scan が残る余地がある（起動役側も同じ構造で、検査のグループごと終了する）。
+ * （猶予の後に強制終了）。強制終了の予約は、直接の子が先に終わっても解除
+ * しない（issue #24）。この検査自身が SIGTERM や SIGINT を受けたときは、
+ * 受けた信号をそのまま scan のグループへ転送し、scan の始末が済んでから
+ * 同じ信号で死ぬ。SIGKILL は受け取れないため、検査自身が SIGKILL で死んだ
+ * 場合は scan が残る余地がある（起動役側も同じ構造である）。
  */
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
@@ -93,8 +95,15 @@ export const AISLOP_ENV = {
 export const SCAN_TIMEOUT_MS = 600_000;
 /** 道具の版確認（biome --version、ruff --version）の制限時間（ミリ秒）。 */
 const PROBE_TIMEOUT_MS = 30_000;
-/** プロセスツリーへ終了信号を送ってから、強制終了まで待つ猶予（ミリ秒）。 */
-const TREE_KILL_GRACE_MS = 3_000;
+/**
+ * プロセスツリーへ終了信号を送ってから、強制終了まで待つ猶予（ミリ秒）。
+ * 起動役（bootstrap.mjs）の猶予は、この猶予より十分長く取る。起動役が
+ * 先に検査を強制終了すると、scan のグループへの強制終了が発火する前に
+ * 検査が死に、SIGTERM を無視する scan が残るためである。
+ */
+export const TREE_KILL_GRACE_MS = 3_000;
+/** 終了信号を送ったプロセスグループが消えたかを確かめる間隔（ミリ秒）。 */
+const GROUP_POLL_MS = 100;
 
 /** ミリ秒指定の環境変数を読む。正の整数でなければ既定を返す。 */
 function timeoutFromEnv(value, fallback) {
@@ -357,9 +366,12 @@ export function checkReport(list, report, probeTool) {
  * 子プロセスを専用プロセスグループで起動し、結果を spawnSync の結果と
  * 同じ形（error / stdout / stderr / status）で返す。制限時間を超えたら、
  * 直接の子だけでなくグループ全体へ終了信号を送り、猶予の後に強制終了
- * する（scan が起動した道具も同じグループにいる）。この検査自身が
- * SIGTERM や SIGINT を受けたときも、グループを終了してから同じ信号で
- * 死ぬ。Windows ではプロセスグループが無いため、直接の子だけを終了する。
+ * する（scan が起動した道具も同じグループにいる）。強制終了の予約は、
+ * 直接の子が先に終わっても解除しない。SIGTERM を無視する子孫がグループ
+ * に残るためである（issue #24）。この検査自身が SIGTERM や SIGINT を
+ * 受けたときは、受けた信号をそのままグループへ転送し、scan 側の後始末
+ * が済んでから同じ信号で死ぬ。Windows ではプロセスグループが無いため、
+ * 直接の子だけを終了する。
  */
 export function spawnScan(command, args, { cwd, env, timeoutMs, maxBuffer }) {
   return new Promise((resolvePromise) => {
@@ -369,45 +381,60 @@ export function spawnScan(command, args, { cwd, env, timeoutMs, maxBuffer }) {
     let stderr = "";
     let failure = null;
     let settled = false;
-    let killTimer = null;
-    const killTree = (signal) => {
-      if (useGroup && child.pid) {
-        try {
-          process.kill(-child.pid, signal);
-          return;
-        } catch {
-          // グループへ送れなければ、直接の子だけでも終了する。
-        }
+    let closed = false;
+    let closeStatus = null;
+    let closeError = null;
+    let receivedSignal = null;
+    const escalation = createGroupEscalation(child, useGroup, () =>
+      maybeFinish(),
+    );
+    const cleanup = () => {
+      clearTimeout(timer);
+      escalation.stopWatch();
+      process.removeListener("SIGTERM", onSigterm);
+      process.removeListener("SIGINT", onSigint);
+    };
+    const maybeFinish = () => {
+      if (settled || !closed) return;
+      if (escalation.pending()) return;
+      settled = true;
+      cleanup();
+      if (receivedSignal !== null) {
+        // scan の始末が済んだので、自分も受けた信号で死ぬ。
+        process.kill(process.pid, receivedSignal);
+        return;
       }
-      try {
-        child.kill(signal);
-      } catch {
-        // 終了済みなら何もしない。
+      if (closeError) {
+        resolvePromise({
+          error: failure ?? closeError,
+          stdout,
+          stderr,
+          status: null,
+        });
+      } else if (failure) {
+        resolvePromise({ error: failure, stdout, stderr, status: null });
+      } else {
+        resolvePromise({ stdout, stderr, status: closeStatus });
       }
     };
     const onSigterm = () => forward("SIGTERM");
     const onSigint = () => forward("SIGINT");
     const forward = (signal) => {
-      killTree("SIGKILL");
+      if (receivedSignal !== null) return;
+      receivedSignal = signal;
+      // 2回目の信号は既定の動作で死ねるよう、受け手を外してから転送する。
       process.removeListener("SIGTERM", onSigterm);
       process.removeListener("SIGINT", onSigint);
-      process.kill(process.pid, signal);
-    };
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      process.removeListener("SIGTERM", onSigterm);
-      process.removeListener("SIGINT", onSigint);
-      resolvePromise(result);
+      escalation.signalGroup(signal);
+      escalation.schedule();
+      maybeFinish();
     };
     const timer = setTimeout(() => {
       failure = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), {
         code: "ETIMEDOUT",
       });
-      killTree("SIGTERM");
-      killTimer = setTimeout(() => killTree("SIGKILL"), TREE_KILL_GRACE_MS);
+      escalation.signalGroup("SIGTERM");
+      escalation.schedule();
     }, timeoutMs);
     process.on("SIGTERM", onSigterm);
     process.on("SIGINT", onSigint);
@@ -418,7 +445,7 @@ export function spawnScan(command, args, { cwd, env, timeoutMs, maxBuffer }) {
         failure = Object.assign(new Error("spawn output exceeded maxBuffer"), {
           code: "ENOBUFS",
         });
-        killTree("SIGKILL");
+        escalation.signalGroup("SIGKILL");
       }
     });
     child.stderr.setEncoding("utf8");
@@ -426,16 +453,84 @@ export function spawnScan(command, args, { cwd, env, timeoutMs, maxBuffer }) {
       stderr += chunk;
     });
     child.on("error", (error) => {
-      finish({ error: failure ?? error, stdout, stderr, status: null });
+      if (closed) return;
+      closed = true;
+      closeError = error;
+      maybeFinish();
     });
     child.on("close", (status) => {
-      if (failure) {
-        finish({ error: failure, stdout, stderr, status: null });
-      } else {
-        finish({ stdout, stderr, status });
-      }
+      if (closed) return;
+      closed = true;
+      closeStatus = status;
+      maybeFinish();
     });
   });
+}
+
+/**
+ * 子のプロセスグループの始末を担う。グループへ信号を送る関数と、終了信号
+ * の後に強制終了を予約する関数と、予約が残っているかの確認を返す。
+ * 強制終了の予約は、直接の子が先に終わっても解除しない（issue #24）。
+ * グループが先に消えたら、ポーリングで気づいて予約を取り消し、onSettled
+ * を呼ぶ。Windows ではプロセスグループが無いため、直接の子だけを扱う。
+ */
+function createGroupEscalation(child, useGroup, onSettled) {
+  let escalationTimer = null;
+  let groupPoll = null;
+  const signalGroup = (signal) => {
+    if (useGroup && child.pid) {
+      try {
+        process.kill(-child.pid, signal);
+        return;
+      } catch {
+        // グループへ送れなければ、直接の子だけでも終了する。
+      }
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // 終了済みなら何もしない。
+    }
+  };
+  const groupAlive = () => {
+    if (!useGroup || !child.pid) return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const stopWatch = () => {
+    if (groupPoll) {
+      clearInterval(groupPoll);
+      groupPoll = null;
+    }
+  };
+  const schedule = () => {
+    if (escalationTimer !== null) return;
+    escalationTimer = setTimeout(() => {
+      escalationTimer = null;
+      stopWatch();
+      signalGroup("SIGKILL");
+      onSettled();
+    }, TREE_KILL_GRACE_MS);
+    if (useGroup) {
+      groupPoll = setInterval(() => {
+        if (groupAlive()) return;
+        clearTimeout(escalationTimer);
+        escalationTimer = null;
+        stopWatch();
+        onSettled();
+      }, GROUP_POLL_MS);
+    }
+  };
+  return {
+    signalGroup,
+    schedule,
+    stopWatch,
+    pending: () => escalationTimer !== null,
+  };
 }
 
 /**

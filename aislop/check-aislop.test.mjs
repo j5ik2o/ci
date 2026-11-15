@@ -795,6 +795,67 @@ describe("scan の制限時間（issue #20）", () => {
     }
   });
 
+  // SIGTERM を無視する孫プロセスを起動する偽の本体。scan 本体は
+  // SIGTERM で死ぬが、孫はグループに残ろうとする（issue #24）。
+  const createStubbornFixture = (base) => {
+    const write = (rel, content) => {
+      const target = path.join(base, rel);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, content);
+    };
+    write(
+      "scripts/aislop-accepted.json",
+      JSON.stringify({ engines: ["lint"], missingToolsAllowed: {}, accepted: [] }),
+    );
+    write(
+      "node_modules/aislop/dist/cli.js",
+      [
+        'const { spawn } = require("node:child_process");',
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const gc = spawn(process.execPath, ["-e", "process.on(\'SIGTERM\', () => {}); setTimeout(() => {}, 30000)"], { stdio: "ignore" });',
+        'fs.writeFileSync(path.join(__dirname, "grandchild.pid"), String(gc.pid));',
+        "setTimeout(() => {}, 30_000);",
+        "",
+      ].join("\n"),
+    );
+    write("node_modules/oxlint/package.json", '{"name":"oxlint","version":"0.0.0"}');
+    write("node_modules/oxlint/index.js", "");
+    write("node_modules/knip/package.json", '{"name":"knip","version":"0.0.0"}');
+    write("node_modules/knip/index.js", "");
+    write(
+      "node_modules/@biomejs/biome/package.json",
+      '{"name":"@biomejs/biome","version":"0.0.0"}',
+    );
+    write("node_modules/@biomejs/biome/bin/biome", 'console.log("1.0.0");\n');
+    return path.join(base, "node_modules", "aislop", "dist", "grandchild.pid");
+  };
+
+  it("scan 本体が先に終わっても、SIGTERM を無視する孫プロセスは強制終了で残らない（issue #24）", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "aislop-timeout-stubborn-"));
+    try {
+      const pidFile = createStubbornFixture(base);
+      const result = spawnSync(
+        process.execPath,
+        [path.join(here, "check-aislop.mjs"), "--root", base],
+        {
+          encoding: "utf8",
+          timeout: 15_000,
+          env: fixtureEnv({ AISLOP_CHECK_SCAN_TIMEOUT_MS: "300" }),
+        },
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /制限時間を超えたため、失敗にします/);
+      const grandchildPid = Number(readFileSync(pidFile, "utf8"));
+      assert.ok(
+        await waitUntilDead(grandchildPid),
+        `孫プロセス ${grandchildPid} が強制終了の予約の解除で残っている`,
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("検査が SIGTERM を受けたら、scan の孫プロセスも残らない", async () => {
     const base = mkdtempSync(path.join(tmpdir(), "aislop-sigterm-"));
     try {

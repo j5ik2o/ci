@@ -120,13 +120,27 @@ caller and accumulate orphan processes across retries:
 
 Timeouts terminate the whole process tree, not just the direct child:
 each layer starts its child in its own process group and signals the
-group (SIGTERM, then SIGKILL after a grace period). Each layer also
-forwards SIGTERM/SIGINT it receives to its child's group before dying,
-so a caller that terminates the bootstrap still takes the scan down.
-(SIGKILL cannot be intercepted; in that case the remaining layers' own
-deadlines still apply.)
+group (SIGTERM, then SIGKILL after a grace period). The scheduled
+SIGKILL is not cancelled when the direct child exits first, because a
+descendant that ignores SIGTERM may still be in the group (issue #24);
+a layer finishes only after the escalation has run its course or the
+group is gone. Each layer also forwards a SIGTERM/SIGINT it receives to
+its child's group as the same signal — not an immediate SIGKILL — so
+the child can run its own cleanup (the checker terminating the scan's
+group) before the grace-period escalation fires (issue #23). The grace
+periods are ordered like the deadlines: the checker's grace is 3 s and
+the bootstrap's is 10 s, so the checker can finish terminating the
+scan's group before the bootstrap's escalation may kill the checker.
+With equal graces the bootstrap could kill the checker first, and a
+scan that ignores SIGTERM would survive. The caller's deadline must
+leave room for the bootstrap's budget plus its grace (660 s + 10 s by
+default). (A SIGKILL
+delivered to a layer itself cannot be intercepted; the layers below it
+then continue under the deadlines they were given.)
 
-The bootstrap's fetch of the canonical files also has a 60 s timeout.
+The bootstrap's fetch of the canonical files also has a 60 s timeout,
+capped by the whole-run budget remaining at that point, so a budget
+below 60 s still bounds the fetch phase (issue #25).
 The version probes for biome and ruff inside the checker have a 30 s
 timeout; a probe that times out cannot prove a tool absent, so the
 engine is treated as stopped-without-verified-absence and fails.

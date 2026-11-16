@@ -143,14 +143,36 @@ export function cacheRootDir(env = process.env) {
 }
 
 /**
+ * 実在する最寄りの親までシンボリックリンクを解決した絶対パスを返す。
+ * macOS の /tmp のように、パスの途中がリンクでも判定がずれないように
+ * するためである。対象そのものはまだ無くてよい。
+ */
+function realPathResolve(target) {
+  let current = path.resolve(target);
+  const rest = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync(current), ...rest);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(target);
+      rest.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
  * キャッシュの置き場所がリポジトリの中に入っていたら、理由を出して
  * 失敗させる。取り寄せた正本ファイルが aislop のスキャン対象に入り、
  * 検査が落ちるためである（issue #31）。判定は絶対パスへ解決してから
- * 行うので、相対パスでリポジトリ内を指す指定も拾える。
+ * 行うので、相対パスでリポジトリ内を指す指定も拾える。パスの途中に
+ * シンボリックリンクがある場合（macOS の /tmp など）も、実パスで
+ * 比べて判定がずれないようにする。
  */
 export function assertCacheDirOutsideRoot(cacheDir, root) {
-  const resolvedCache = path.resolve(cacheDir);
-  const rel = path.relative(path.resolve(root), resolvedCache);
+  const resolvedCache = realPathResolve(cacheDir);
+  const rel = path.relative(realPathResolve(root), resolvedCache);
   const inside =
     rel === "" ||
     (!rel.startsWith(`..${path.sep}`) &&

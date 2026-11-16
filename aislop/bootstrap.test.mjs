@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -165,6 +166,29 @@ describe("キャッシュの置き場所", () => {
       path.join(path.sep, "cache"),
     ]) {
       assertCacheDirOutsideRoot(outside, root);
+    }
+  });
+
+  it("パスの途中のシンボリックリンクを解決してから判定する（issue #31）", () => {
+    const base = mkdtempSync(path.join(tmpdir(), "aislop-link-"));
+    try {
+      const realRoot = mkdtempSync(path.join(base, "repo-"));
+      const linkRoot = path.join(base, "link-repo");
+      symlinkSync(realRoot, linkRoot, "dir");
+      assert.throws(
+        () => assertCacheDirOutsideRoot(path.join(linkRoot, "inner"), realRoot),
+        /リポジトリの中になっています/,
+      );
+      assert.throws(
+        () => assertCacheDirOutsideRoot(path.join(realRoot, "inner"), linkRoot),
+        /リポジトリの中になっています/,
+      );
+      const realOutside = mkdtempSync(path.join(base, "outside-"));
+      const linkOutside = path.join(base, "link-outside");
+      symlinkSync(realOutside, linkOutside, "dir");
+      assertCacheDirOutsideRoot(linkOutside, realRoot);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 

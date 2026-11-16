@@ -13,7 +13,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -21,6 +21,7 @@ import {
   FETCH_TIMEOUT_MS,
   RUN_TIMEOUT_MS,
   TREE_KILL_GRACE_MS,
+  cacheRootDir,
   childTimeoutMs,
   fetchTimeoutMs,
   remainingBudgetMs,
@@ -94,6 +95,44 @@ describe("writeVerifiedCache（issue #21）", () => {
       assert.deepEqual(readdirSync(cacheDir), ["check-aislop.mjs"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("キャッシュの置き場所", () => {
+  it("AISLOP_CHECK_CACHE_DIR の指定が最優先で、XDG_CACHE_HOME より先に効く", () => {
+    assert.equal(
+      cacheRootDir({
+        AISLOP_CHECK_CACHE_DIR: "/somewhere/cache",
+        XDG_CACHE_HOME: "/xdg",
+      }),
+      "/somewhere/cache",
+    );
+  });
+
+  it("XDG_CACHE_HOME があれば、その配下の aislop-check になる", () => {
+    assert.equal(
+      cacheRootDir({ XDG_CACHE_HOME: "/xdg" }),
+      path.join("/xdg", "aislop-check"),
+    );
+  });
+
+  it("指定が無ければ、ホーム配下の .cache の中の aislop-check になる", () => {
+    assert.equal(
+      cacheRootDir({}),
+      path.join(homedir(), ".cache", "aislop-check"),
+    );
+  });
+
+  it("リポジトリの中（node_modules や直下）には置かない", () => {
+    for (const env of [
+      {},
+      { XDG_CACHE_HOME: "/xdg" },
+      { AISLOP_CHECK_CACHE_DIR: "/somewhere/cache" },
+    ]) {
+      const root = cacheRootDir(env);
+      assert.ok(path.isAbsolute(root));
+      assert.ok(!root.split(path.sep).includes("node_modules"));
     }
   });
 });

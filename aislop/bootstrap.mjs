@@ -15,11 +15,17 @@
  * ref は j5ik2o/ci のタグ（またはコミット）で、files はその ref における
  * aislop/ 配下のファイルの SHA-256 である。取り寄せたファイルは、必ず
  * このハッシュと照合してから使う。ハッシュが合わなければ落とす。
- * 取り寄せたファイルは node_modules/.aislop-check/<ref>/ へ置き、次回からは
- * ハッシュが合う限りそれを使う（ネットワークが無くても、キャッシュがあれば
- * 動く）。置き場所が node_modules の中なのは、aislop のスキャン対象から
- * 外れるためである。リポジトリ直下へ置くと、取り寄せた正本ファイル自体が
- * スキャンの指摘を生み、検査が落ちる。
+ * 取り寄せたファイルは、利用者ごとのキャッシュ（既定では
+ * ~/.cache/aislop-check/<ref>/、XDG_CACHE_HOME があればその配下）へ置き、
+ * 次回からはハッシュが合う限りそれを使う（ネットワークが無くても、
+ * キャッシュがあれば動く）。置き場所をリポジトリの外にした理由は2つある。
+ * 1つは、npm ci が node_modules を丸ごと消すため、中に置いた検証済みの
+ * キャッシュまで毎回消えてしまうこと。もう1つは、aislop のスキャン対象
+ * から外れるためである。リポジトリ直下へ置くと、取り寄せた正本ファイル
+ * 自体がスキャンの指摘を生み、検査が落ちる。置き場所は環境変数
+ * AISLOP_CHECK_CACHE_DIR で変更できる。キャッシュは ref ごとに分かれ、
+ * 中身は使う前に必ずハッシュで照合するため、複数のリポジトリで共有
+ * しても安全である。
  * キャッシュへの書き込みは、プロセスごとの一時ファイルへ書いてから rename で
  * 原子的に置く。check と test などが並行しても、書き込み途中のファイルを
  * 別の実行が読むことはない（issue #21）。
@@ -59,6 +65,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -106,6 +113,24 @@ export function remainingBudgetMs(budgetMs, startedAt, now = Date.now()) {
 export function fetchTimeoutMs(remainingMs) {
   if (remainingMs <= 0) return 0;
   return Math.min(FETCH_TIMEOUT_MS, remainingMs);
+}
+
+/**
+ * 取り寄せた正本ファイルのキャッシュの置き場所（ref の下位フォルダを
+ * 除いた親まで）。リポジトリの外に置く。node_modules の中では npm ci の
+ * たびに消え、リポジトリ直下では aislop のスキャン対象に入ってしまう
+ * ためである。優先順位は、AISLOP_CHECK_CACHE_DIR の指定、XDG_CACHE_HOME
+ * の配下、ホーム配下の .cache、の順で、ホームが分からない環境では
+ * 一時フォルダへ逃がす。
+ */
+export function cacheRootDir(env = process.env) {
+  if (env.AISLOP_CHECK_CACHE_DIR) return env.AISLOP_CHECK_CACHE_DIR;
+  if (env.XDG_CACHE_HOME) {
+    return path.join(env.XDG_CACHE_HOME, "aislop-check");
+  }
+  const home = homedir();
+  if (home) return path.join(home, ".cache", "aislop-check");
+  return path.join(tmpdir(), "aislop-check");
 }
 
 /**
@@ -356,7 +381,7 @@ async function main() {
     );
   }
   const budgetMs = childTimeoutMs(process.env);
-  const cacheDir = path.join(ROOT, "node_modules", ".aislop-check", pin.ref);
+  const cacheDir = path.join(cacheRootDir(), pin.ref);
   // 全体予算は取得の時間も含む。取得の前にも残り時間を確認し、取得1回の
   // 制限時間は残り時間で頭打ちにする（issue #25）。残りが無ければ、取得も
   // 子の起動もせずに失敗する。

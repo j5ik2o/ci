@@ -92,7 +92,10 @@ against the pin before use, and caches them in a per-user cache
 directory outside the repository: `~/.cache/aislop-check/<ref>/`
 (`$XDG_CACHE_HOME/aislop-check/<ref>/` when XDG_CACHE_HOME is set;
 AISLOP_CHECK_CACHE_DIR overrides the cache root, with the ref appended
-below it). Cache writes are atomic: the
+below it). Relative paths given through these variables are resolved to
+absolute paths before use, and a resolved location inside the repository
+is rejected with an error before anything is written, because the
+fetched files would enter the scan's scope. Cache writes are atomic: the
 verified bytes go to a per-process temporary file in the same directory
 and are then renamed into place, so concurrent `check` / `test` runs
 never read a half-written cache file (issue #21). The cache lives outside

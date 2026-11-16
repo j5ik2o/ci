@@ -21,6 +21,7 @@ import {
   FETCH_TIMEOUT_MS,
   RUN_TIMEOUT_MS,
   TREE_KILL_GRACE_MS,
+  assertCacheDirOutsideRoot,
   cacheRootDir,
   childTimeoutMs,
   fetchTimeoutMs,
@@ -134,6 +135,50 @@ describe("キャッシュの置き場所", () => {
       assert.ok(path.isAbsolute(root));
       assert.ok(!root.split(path.sep).includes("node_modules"));
     }
+  });
+
+  it("相対パスの指定は、絶対パスへ解決してから返す（issue #31）", () => {
+    const fromEnv = cacheRootDir({ AISLOP_CHECK_CACHE_DIR: "relative-cache" });
+    assert.ok(path.isAbsolute(fromEnv));
+    assert.equal(fromEnv, path.resolve("relative-cache"));
+    const fromXdg = cacheRootDir({ XDG_CACHE_HOME: "relative-xdg" });
+    assert.ok(path.isAbsolute(fromXdg));
+    assert.equal(fromXdg, path.resolve("relative-xdg", "aislop-check"));
+  });
+
+  it("置き場所がリポジトリの中なら失敗し、外なら通る（issue #31）", () => {
+    const root = path.join(path.sep, "work", "repo");
+    for (const inside of [
+      root,
+      path.join(root, ".aislop-check"),
+      path.join(root, "sub", "cache"),
+    ]) {
+      assert.throws(
+        () => assertCacheDirOutsideRoot(inside, root),
+        /リポジトリの中になっています/,
+        `${inside} はリポジトリの中`,
+      );
+    }
+    for (const outside of [
+      path.join(path.sep, "work", "cache"),
+      path.join(path.sep, "work", "repo2", "cache"),
+      path.join(path.sep, "cache"),
+    ]) {
+      assertCacheDirOutsideRoot(outside, root);
+    }
+  });
+
+  it("リポジトリ内の判定は、相対パスで与えても解決してから行う（issue #31）", () => {
+    const root = process.cwd();
+    assert.throws(
+      () => assertCacheDirOutsideRoot(".", root),
+      /リポジトリの中になっています/,
+    );
+    assert.throws(
+      () => assertCacheDirOutsideRoot(path.join("sub", "cache"), root),
+      /リポジトリの中になっています/,
+    );
+    assertCacheDirOutsideRoot(path.join("..", "outside-cache"), root);
   });
 });
 

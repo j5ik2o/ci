@@ -23,9 +23,13 @@
  * キャッシュまで毎回消えてしまうこと。もう1つは、aislop のスキャン対象
  * から外れるためである。リポジトリ直下へ置くと、取り寄せた正本ファイル
  * 自体がスキャンの指摘を生み、検査が落ちる。置き場所は環境変数
- * AISLOP_CHECK_CACHE_DIR で変更できる。キャッシュは ref ごとに分かれ、
- * 中身は使う前に必ずハッシュで照合するため、複数のリポジトリで共有
- * しても安全である。
+ * AISLOP_CHECK_CACHE_DIR で変更できる。相対パスで指定された場合は
+ * 絶対パスへ解決してから使う（取得は起動時の作業ディレクトリ基準、
+ * 子の実行はリポジトリルート基準なので、相対のままでは食い違う）。
+ * 解決後の置き場所がリポジトリの中になる場合は、取り寄せたファイルが
+ * スキャン対象に入ってしまうため、書き込みの前にエラーで止める。
+ * キャッシュは ref ごとに分かれ、中身は使う前に必ずハッシュで照合
+ * するため、複数のリポジトリで共有しても安全である。
  * キャッシュへの書き込みは、プロセスごとの一時ファイルへ書いてから rename で
  * 原子的に置く。check と test などが並行しても、書き込み途中のファイルを
  * 別の実行が読むことはない（issue #21）。
@@ -121,16 +125,42 @@ export function fetchTimeoutMs(remainingMs) {
  * たびに消え、リポジトリ直下では aislop のスキャン対象に入ってしまう
  * ためである。優先順位は、AISLOP_CHECK_CACHE_DIR の指定、XDG_CACHE_HOME
  * の配下、ホーム配下の .cache、の順で、ホームが分からない環境では
- * 一時フォルダへ逃がす。
+ * 一時フォルダへ逃がす。環境変数が相対パスなら、絶対パスへ解決して
+ * から返す。取得は起動時の作業ディレクトリ基準、子の実行はリポジトリ
+ * ルート基準であり、相対のままだと保存先と実行対象が食い違うため
+ * である（issue #31）。
  */
 export function cacheRootDir(env = process.env) {
-  if (env.AISLOP_CHECK_CACHE_DIR) return env.AISLOP_CHECK_CACHE_DIR;
+  if (env.AISLOP_CHECK_CACHE_DIR) {
+    return path.resolve(env.AISLOP_CHECK_CACHE_DIR);
+  }
   if (env.XDG_CACHE_HOME) {
-    return path.join(env.XDG_CACHE_HOME, "aislop-check");
+    return path.resolve(env.XDG_CACHE_HOME, "aislop-check");
   }
   const home = homedir();
   if (home) return path.join(home, ".cache", "aislop-check");
   return path.join(tmpdir(), "aislop-check");
+}
+
+/**
+ * キャッシュの置き場所がリポジトリの中に入っていたら、理由を出して
+ * 失敗させる。取り寄せた正本ファイルが aislop のスキャン対象に入り、
+ * 検査が落ちるためである（issue #31）。判定は絶対パスへ解決してから
+ * 行うので、相対パスでリポジトリ内を指す指定も拾える。
+ */
+export function assertCacheDirOutsideRoot(cacheDir, root) {
+  const resolvedCache = path.resolve(cacheDir);
+  const rel = path.relative(path.resolve(root), resolvedCache);
+  const inside =
+    rel === "" ||
+    (!rel.startsWith(`..${path.sep}`) &&
+      rel !== ".." &&
+      !path.isAbsolute(rel));
+  if (inside) {
+    throw new Error(
+      `キャッシュの置き場所（${resolvedCache}）がリポジトリの中になっています。取り寄せた正本ファイルが aislop のスキャン対象に入り、検査が落ちます。AISLOP_CHECK_CACHE_DIR にはリポジトリの外を指定してください。`,
+    );
+  }
 }
 
 /**
@@ -382,6 +412,7 @@ async function main() {
   }
   const budgetMs = childTimeoutMs(process.env);
   const cacheDir = path.join(cacheRootDir(), pin.ref);
+  assertCacheDirOutsideRoot(cacheDir, ROOT);
   // 全体予算は取得の時間も含む。取得の前にも残り時間を確認し、取得1回の
   // 制限時間は残り時間で頭打ちにする（issue #25）。残りが無ければ、取得も
   // 子の起動もせずに失敗する。

@@ -88,19 +88,28 @@ all disappear is treated as suspected-stopped rather than fixed.
 The bootstrap downloads the two files from
 `raw.githubusercontent.com/j5ik2o/ci/<ref>/aislop/...` (this repository is
 public, so no credentials are needed), verifies each file's SHA-256
-against the pin before use, and caches them under
-`node_modules/.aislop-check/<ref>/`. Cache writes are atomic: the
+against the pin before use, and caches them in a per-user cache
+directory outside the repository: `~/.cache/aislop-check/<ref>/`
+(`$XDG_CACHE_HOME/aislop-check/<ref>/` when XDG_CACHE_HOME is set;
+AISLOP_CHECK_CACHE_DIR overrides the cache root, with the ref appended
+below it). Cache writes are atomic: the
 verified bytes go to a per-process temporary file in the same directory
 and are then renamed into place, so concurrent `check` / `test` runs
-never read a half-written cache file (issue #21). The cache lives under `node_modules`
-on purpose: aislop does not scan `node_modules`, so the fetched canonical
-files cannot produce findings of their own (a repository-root cache was
-measured to fail the check for exactly that reason). With a valid cache
+never read a half-written cache file (issue #21). The cache lives outside
+the repository for two reasons: `npm ci` deletes `node_modules`
+wholesale, so the earlier cache under `node_modules/.aislop-check/`
+was thrown away on every install; and the fetched canonical files must
+stay outside aislop's scan scope, so they cannot produce findings of
+their own (a repository-root cache was
+measured to fail the check for exactly that reason). Entries are keyed
+by ref and every use re-verifies the SHA-256 against the pin, so one
+cache is shared safely by every repository on the machine. With a valid cache
 the bootstrap works without network access. A hash mismatch is a hard
 failure and the fetched file is never used. Callers that ran an earlier
 bootstrap revision may still have a cache at `.aislop-check/<ref>/` in
-the repository root; delete that directory, because it sits inside the
-scan's scope and its files will fail the check.
+the repository root or under `node_modules/.aislop-check/`; both are
+unused now, and the repository-root one should be deleted, because it
+sits inside the scan's scope and its files will fail the check.
 
 ## Timeouts (issue #20)
 

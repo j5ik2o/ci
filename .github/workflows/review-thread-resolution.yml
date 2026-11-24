@@ -79,7 +79,9 @@ permissions:
   pull-requests: read
   statuses: write
 
-# One run per PR and mode. Event-driven refreshes cancel the older run: the
+# One run per PR and mode. The PR number follows resolve_pr_number in the
+# script: an explicit pr_number (not empty, not "null") wins over the event's
+# PR. Event-driven refreshes cancel the older run: the
 # newest run always finishes and publishes the commit status, so cancellation
 # never leaves the status context stale or cancelled. CI gate runs queue
 # instead, because their job result feeds the caller's aggregate CI job.
@@ -89,19 +91,20 @@ concurrency:
   group: >-
     ${{ format('review-thread-resolution-{0}-{1}',
       inputs.wait_for_other_checks == 'false' && 'ci' || 'event',
-      github.event.pull_request.number
+      (inputs.pr_number != '' && inputs.pr_number != 'null' && inputs.pr_number)
+        || github.event.pull_request.number
         || (github.event.issue.pull_request && github.event.issue.number)
         || github.event.workflow_run.pull_requests[0].number
-        || inputs.pr_number
         || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'refresh-all')
         || format('run-{0}', github.run_id)) }}
-  cancel-in-progress: ${{ inputs.wait_for_other_checks != 'false' && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.pr_number == '') }}
+  cancel-in-progress: ${{ inputs.wait_for_other_checks != 'false' && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && (inputs.pr_number == '' || inputs.pr_number == 'null')) }}
 
 jobs:
   unresolved-comments:
     name: ${{ inputs.wait_for_other_checks == 'false' && 'Evaluate CI review-thread gate' || 'Refresh review-thread state' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A single PR takes seconds; refresh-all takes about 4 seconds per open PR.
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (inputs.pr_number == '' || inputs.pr_number == 'null') && 30 || 10 }}
     steps:
       - name: Checkout shared CI scripts
         uses: actions/checkout@v6

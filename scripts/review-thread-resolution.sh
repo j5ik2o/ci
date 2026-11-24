@@ -200,13 +200,24 @@ publish_status() {
   echo "Published commit status '$state' for $head_ref_oid."
 }
 
+# Prints the cursor of the next page of a pullRequest connection, or nothing on
+# the last page. Fails when pageInfo is malformed, so a truncated response
+# never ends the fetch early.
+next_page_cursor() {
+  jq -r --arg connection "$2" '
+    .data.repository.pullRequest[$connection].pageInfo as $info
+    | if ($info.hasNextPage | type) != "boolean" then error("hasNextPage is not a boolean")
+      elif $info.hasNextPage then ($info.endCursor | strings | select(length > 0)) // error("endCursor is missing")
+      else "" end
+  ' <<< "$1"
+}
+
 fetch_unresolved_threads() {
   local pr_number="$1"
   local pages_file
   local cursor=''
   local page=1
   local response
-  local has_next
   local cursor_args
 
   pages_file="$(mktemp)"
@@ -266,11 +277,13 @@ fetch_unresolved_threads() {
       return 1
     fi
 
-    has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<< "$response")"
-    if [[ "$has_next" != "true" ]]; then
+    if ! cursor="$(next_page_cursor "$response" reviewThreads)"; then
+      echo "::error::Unexpected GitHub GraphQL page info while fetching PR review threads on page $page."
+      return 1
+    fi
+    if [[ -z "$cursor" ]]; then
       break
     fi
-    cursor="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<< "$response")"
     page=$((page + 1))
   done
 
@@ -283,7 +296,6 @@ fetch_top_level_comments() {
   local cursor=''
   local page=1
   local response
-  local has_next
   local cursor_args
 
   pages_file="$(mktemp)"
@@ -339,11 +351,13 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    has_next="$(jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage' <<< "$response")"
-    if [[ "$has_next" != "true" ]]; then
+    if ! cursor="$(next_page_cursor "$response" comments)"; then
+      echo "::error::Unexpected GitHub GraphQL page info while fetching top-level PR comments on page $page."
+      return 1
+    fi
+    if [[ -z "$cursor" ]]; then
       break
     fi
-    cursor="$(jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor' <<< "$response")"
     page=$((page + 1))
   done
 
@@ -410,11 +424,13 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    has_next="$(jq -r '.data.repository.pullRequest.reviews.pageInfo.hasNextPage' <<< "$response")"
-    if [[ "$has_next" != "true" ]]; then
+    if ! cursor="$(next_page_cursor "$response" reviews)"; then
+      echo "::error::Unexpected GitHub GraphQL page info while fetching PR reviews on page $page."
+      return 1
+    fi
+    if [[ -z "$cursor" ]]; then
       break
     fi
-    cursor="$(jq -r '.data.repository.pullRequest.reviews.pageInfo.endCursor' <<< "$response")"
     page=$((page + 1))
   done
 

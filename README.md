@@ -80,9 +80,11 @@ do not fail the workflow job for unresolved review state. Do not require the
 concurrency group, and a newer event cancels the older run. Cancellation
 never touches the status: the newest run publishes `success` or `failure`. If
 its evaluation fails after the PR head is known, for example on a GitHub API
-failure, it publishes `error`, so an earlier `success` on the same head does
-not stay. If it fails before that, or the job times out, nothing is published
-and the run shows as failed. Refresh-all runs (`schedule`, `workflow_dispatch` without
+failure, it tries to publish `error`, so an earlier `success` on the same head
+does not stay. If GitHub also rejects that `error` write, or the evaluation
+fails before the head is known, or the job times out, the previous status
+stays unchanged and only the run shows as failed; rerun the refresh once the
+API recovers. Refresh-all runs (`schedule`, `workflow_dispatch` without
 `pr_number`) share one queued group.
 
 The refresh never waits for other PR checks. It evaluates the review state as

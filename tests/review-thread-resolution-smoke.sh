@@ -41,6 +41,12 @@ if [[ "$args" == *"graphql"* ]]; then
           printf '%s\n' '{"errors":[{"message":"Something went wrong on page 2"}]}'
         fi
         ;;
+      no-has-next)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"endCursor":"threads-2"},"nodes":[]}}}}}'
+        ;;
+      no-end-cursor)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}'
+        ;;
       null-pr)
         printf '%s\n' '{"data":{"repository":{"pullRequest":null}}}'
         ;;
@@ -134,6 +140,7 @@ reset_logs() {
   : > "$tmpdir/calls.log"
   : > "$tmpdir/sleeps.log"
   : > "$tmpdir/status-payloads.log"
+  : > "$tmpdir/summary.md"
 }
 
 run_script() {
@@ -155,6 +162,7 @@ run_script() {
   PR_NUMBER="${TEST_PR_NUMBER-27}" \
   GITHUB_EVENT_PATH="${TEST_EVENT_PATH:-}" \
   GITHUB_RUN_ID="123" \
+  GITHUB_STEP_SUMMARY="$tmpdir/summary.md" \
     bash "$root/scripts/review-thread-resolution.sh"
 }
 
@@ -235,6 +243,8 @@ expect_error_status() {
 }
 expect_error_status "a failed comment fetch" GH_FAIL_COMMENTS=1
 expect_error_status "an error on a later thread page" GH_THREADS=page2-error
+expect_error_status "a page without hasNextPage" GH_THREADS=no-has-next
+expect_error_status "a page with hasNextPage but no endCursor" GH_THREADS=no-end-cursor
 expect_error_status "a response with a null pullRequest" GH_THREADS=null-pr
 expect_error_status "a response that is not JSON" GH_THREADS=not-json
 
@@ -247,8 +257,8 @@ for mode in unresolved paged; do
     exit 1
   }
   if ! grep -q '"state":"failure"' "$tmpdir/status-payloads.log" \
-    || ! grep -q '^1 unresolved PR review thread' "$tmpdir/out.log"; then
-    cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
+    || ! grep -q '^1 unresolved PR review thread' "$tmpdir/summary.md"; then
+    cat "$tmpdir/out.log" "$tmpdir/summary.md" "$tmpdir/status-payloads.log" >&2
     echo "unresolved threads ($mode) must be counted and publish failure." >&2
     exit 1
   fi

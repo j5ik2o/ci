@@ -25,6 +25,11 @@ fi
 args="$*"
 
 if [[ "$args" == *"graphql"* ]]; then
+  # An empty or whitespace-only body from a successful gh call.
+  if [[ -n "${GH_EMPTY_FETCH:-}" && "$args" == *"${GH_EMPTY_FETCH}(first: 100"* ]]; then
+    [[ "${GH_EMPTY_BODY:-empty}" == "blank" ]] && printf '  \n\n'
+    exit 0
+  fi
   if [[ "$args" == *"reviewThreads"* ]]; then
     second_page=0
     [[ "$args" == *"cursor=threads-2"* ]] && second_page=1
@@ -247,6 +252,11 @@ expect_error_status "a page without hasNextPage" GH_THREADS=no-has-next
 expect_error_status "a page with hasNextPage but no endCursor" GH_THREADS=no-end-cursor
 expect_error_status "a response with a null pullRequest" GH_THREADS=null-pr
 expect_error_status "a response that is not JSON" GH_THREADS=not-json
+for fetch in reviewThreads comments reviews; do
+  for body in empty blank; do
+    expect_error_status "an $body $fetch response" GH_EMPTY_FETCH="$fetch" GH_EMPTY_BODY="$body"
+  done
+done
 
 # Unresolved threads, including one on a later page, publish failure.
 for mode in unresolved paged; do

@@ -201,10 +201,10 @@ publish_status() {
 }
 
 # Prints the cursor of the next page of a pullRequest connection, or nothing on
-# the last page. Fails when pageInfo is malformed, so a truncated response
-# never ends the fetch early.
+# the last page. Fails when pageInfo is malformed or the response is empty, so
+# a truncated response never ends the fetch early.
 next_page_cursor() {
-  jq -r --arg connection "$2" '
+  jq -er --arg connection "$2" '
     .data.repository.pullRequest[$connection].pageInfo as $info
     | if ($info.hasNextPage | type) != "boolean" then error("hasNextPage is not a boolean")
       elif $info.hasNextPage then ($info.endCursor | strings | select(length > 0)) // error("endCursor is missing")
@@ -270,7 +270,7 @@ fetch_unresolved_threads() {
       return 1
     fi
 
-    if ! jq -c '(.data.repository.pullRequest.reviewThreads.nodes | arrays)
+    if ! jq -ce '(.data.repository.pullRequest.reviewThreads.nodes | arrays)
       // error("response has no reviewThreads.nodes")
       | map(select(.isResolved == false))' <<< "$response" >> "$pages_file"; then
       echo "::error::Unexpected GitHub GraphQL response while fetching PR review threads on page $page."
@@ -345,7 +345,7 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    if ! jq -c '(.data.repository.pullRequest.comments.nodes | arrays)
+    if ! jq -ce '(.data.repository.pullRequest.comments.nodes | arrays)
       // error("response has no comments.nodes")' <<< "$response" >> "$pages_file"; then
       echo "::error::Unexpected GitHub GraphQL response while fetching top-level PR comments on page $page."
       return 1
@@ -408,7 +408,7 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    if ! jq -c '(.data.repository.pullRequest.reviews.nodes | arrays)
+    if ! jq -ce '(.data.repository.pullRequest.reviews.nodes | arrays)
         // error("response has no reviews.nodes")
         | map(select((.body // "") != "" and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")))
         | map({

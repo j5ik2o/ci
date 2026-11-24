@@ -3,6 +3,10 @@ set -euo pipefail
 REPOSITORY="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 REQUIRED_CONTEXT="${REQUIRED_CONTEXT:-Check unresolved comments}"
+# The refresh never waits for other checks; it evaluates the current state and
+# publishes a conclusion. The input name stays for compatibility and now picks
+# the mode: true (default) is an event refresh whose job succeeds even with
+# unresolved review state, false is a CI gate whose job fails on it.
 WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-1}"
 PUBLISH_STATUS="${PUBLISH_STATUS:-1}"
 SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
@@ -135,206 +139,9 @@ fetch_pr_head_oid() {
     --jq '.head.sha // ""'
 }
 
-# API responses go to jq through files, never through arguments: a PR head with
-# a long check history exceeds the execve argument limit (E2BIG).
-fetch_pending_check_names() {
-  local head_ref_oid="$1"
-  local response_dir
-
-  response_dir="$(mktemp -d)"
-  trap 'rm -rf "$response_dir"; trap - RETURN' RETURN
-
-  gh api \
-    --paginate \
-    --slurp \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/$OWNER/$REPO/commits/$head_ref_oid/check-runs?per_page=100&filter=latest" \
-    > "$response_dir/check-runs.json" || return 1
-
-  gh api \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/$OWNER/$REPO/commits/$head_ref_oid/status" \
-    > "$response_dir/status.json" || return 1
-
-  jq -n -r \
-    --arg required_context "$REQUIRED_CONTEXT" \
-    --arg current_run_id "${GITHUB_RUN_ID:-}" \
-    --slurpfile check_run_pages "$response_dir/check-runs.json" \
-    --slurpfile status_responses "$response_dir/status.json" '
-      $status_responses[0] as $status_response
-      |
-      def excluded_check_name:
-        (.name // "") as $name
-        | ($name | split(" / ")[-1]) as $job_name
-        | $name == $required_context
-          or $job_name == $required_context
-          or $name == "Refresh review-thread state"
-          or $job_name == "Refresh review-thread state"
-          or $name == "Evaluate CI review-thread gate"
-          or $job_name == "Evaluate CI review-thread gate"
-          or $name == "Review Thread Resolution"
-          or $job_name == "Review Thread Resolution"
-          or $name == "Review Thread Refresh"
-          or $job_name == "Review Thread Refresh"
-          or $name == "CI Review Thread Gate"
-          or $job_name == "CI Review Thread Gate";
-      def current_workflow_run:
-        ($current_run_id | length) > 0
-        and ((.details_url // "") | contains("/actions/runs/" + $current_run_id + "/"));
-
-      (
-        [
-          $check_run_pages[0][]?.check_runs[]?
-          | select((excluded_check_name | not) and (current_workflow_run | not))
-          | select((.status // "") != "completed")
-          | "check: \(.name // "unknown") [\(.status // "unknown")]"
-        ]
-        +
-        [
-          ($status_response.statuses // [])
-          | group_by(.context // "")
-          | .[]
-          | max_by(.updated_at // .created_at // "")
-          | select((.context // "") != $required_context)
-          | select((.state // "") == "pending" or (.state // "") == "expected")
-          | "status: \(.context // "unknown") [\(.state // "unknown")]"
-        ]
-      )[]
-    '
-}
-
-error_is_resource_inaccessible() {
-  grep -qi 'Resource not accessible by integration' "$1"
-}
-
-next_sleep_seconds() {
-  local current="$1"
-  local max_sleep_seconds=30
-
-  current=$((current * 2))
-  if [[ "$current" -gt "$max_sleep_seconds" ]]; then
-    current="$max_sleep_seconds"
-  fi
-  printf '%s\n' "$current"
-}
-
-# Waits for other PR checks while holding a runner, so the wait is bounded by a
-# short sleep budget. When the budget runs out the caller still evaluates and
-# publishes a conclusion: a run never ends without one, and a later event (or a
-# caller's workflow_run trigger) re-evaluates once the other checks finish.
-wait_for_checks() {
-  local pr_number="$1"
-  local head_ref_oid="$2"
-  local can_publish_status="$3"
-  local wait_budget_seconds
-  local slept_seconds=0
-  local sleep_seconds=5
-  local current_head_ref_oid
-  local pending_checks
-  local published_pending=0
-  local error_file
-
-  if ! bool_is_true "$WAIT_FOR_OTHER_CHECKS"; then
-    echo "Skipping other-check wait because wait_for_other_checks=false."
-    return 0
-  fi
-
-  if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-    wait_budget_seconds=15
-  else
-    wait_budget_seconds="${WAIT_TIMEOUT_SECONDS:-600}"
-  fi
-
-  while :; do
-    error_file="$(mktemp)"
-
-    if ! current_head_ref_oid="$(fetch_pr_head_oid "$pr_number" 2> "$error_file")"; then
-      if error_is_resource_inaccessible "$error_file"; then
-        echo "::notice::Unable to inspect PR head because GitHub token cannot access a resource; evaluating review-thread state without waiting for other checks."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 0
-      fi
-      if [[ "$slept_seconds" -ge "$wait_budget_seconds" ]]; then
-        echo "::error::Failed to fetch PR head within the ${wait_budget_seconds}s wait budget."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 1
-      fi
-      echo "::warning::Failed to fetch PR head; retrying."
-      cat "$error_file" >&2
-      rm -f "$error_file"
-      sleep "$sleep_seconds"
-      slept_seconds=$((slept_seconds + sleep_seconds))
-      sleep_seconds="$(next_sleep_seconds "$sleep_seconds")"
-      continue
-    fi
-    rm -f "$error_file"
-
-    if [[ "$current_head_ref_oid" != "$head_ref_oid" ]]; then
-      echo "::notice::PR head changed from $head_ref_oid to $current_head_ref_oid while waiting for checks; continuing on the latest head."
-      head_ref_oid="$current_head_ref_oid"
-      published_pending=0
-    fi
-
-    error_file="$(mktemp)"
-    if ! pending_checks="$(fetch_pending_check_names "$current_head_ref_oid" 2> "$error_file")"; then
-      if error_is_resource_inaccessible "$error_file"; then
-        echo "::notice::Unable to inspect other PR checks because GitHub token cannot access a check resource; evaluating review-thread state without waiting."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 0
-      fi
-      if [[ "$slept_seconds" -ge "$wait_budget_seconds" ]]; then
-        echo "::error::Failed to fetch PR checks within the ${wait_budget_seconds}s wait budget."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 1
-      fi
-      echo "::warning::Failed to fetch PR checks; retrying."
-      cat "$error_file" >&2
-      rm -f "$error_file"
-      sleep "$sleep_seconds"
-      slept_seconds=$((slept_seconds + sleep_seconds))
-      sleep_seconds="$(next_sleep_seconds "$sleep_seconds")"
-      continue
-    fi
-    rm -f "$error_file"
-
-    if [[ -z "$pending_checks" ]]; then
-      echo "All other PR checks have reached a terminal state."
-      return 0
-    fi
-
-    if [[ "$published_pending" -eq 0 && "$can_publish_status" -eq 1 ]]; then
-      publish_status "$head_ref_oid" pending "Waiting for other PR checks." || return 1
-      published_pending=1
-      PENDING_STATUS_SHA="$head_ref_oid"
-    fi
-
-    if [[ "$slept_seconds" -ge "$wait_budget_seconds" ]]; then
-      echo "::notice::Other PR checks are still pending after ${slept_seconds}s; evaluating review-thread state now."
-      echo "$pending_checks"
-      return 0
-    fi
-
-    echo "Waiting for other PR checks to finish before evaluating review comments:"
-    echo "$pending_checks"
-    if [[ $((slept_seconds + sleep_seconds)) -gt "$wait_budget_seconds" ]]; then
-      sleep_seconds=$((wait_budget_seconds - slept_seconds))
-    fi
-    sleep "$sleep_seconds"
-    slept_seconds=$((slept_seconds + sleep_seconds))
-    sleep_seconds="$(next_sleep_seconds "$sleep_seconds")"
-  done
-}
-
 publish_status() {
   local head_ref_oid="$1"
   local state="$2"
-  local description="${3:-Review-thread gate ${2}.}"
   local payload
   local response
   local error_file
@@ -347,7 +154,7 @@ publish_status() {
     jq -n \
       --arg state "$state" \
       --arg target_url "$RUN_URL" \
-      --arg description "$description" \
+      --arg description "Review-thread gate ${state}." \
       --arg context "$REQUIRED_CONTEXT" \
       '{
         state: $state,
@@ -759,8 +566,6 @@ check_pr() {
     can_publish_status=0
   fi
 
-  wait_for_checks "$pr_number" "$head_ref_oid" "$can_publish_status" || return 1
-
   latest_head_ref_oid="$(fetch_pr_head_oid "$pr_number")" || return 1
   if [[ -z "$latest_head_ref_oid" || "$latest_head_ref_oid" == "null" ]]; then
     echo "::error::Failed to refresh PR #$pr_number head SHA before publishing status."
@@ -810,7 +615,6 @@ run_refresh_all() {
   local pr_numbers=()
   local overall=0
   local result
-  local original_wait_for_other_checks="$WAIT_FOR_OTHER_CHECKS"
 
   mapfile -t pr_numbers < <(list_open_prs)
   if [[ "${#pr_numbers[@]}" -eq 0 ]]; then
@@ -818,7 +622,6 @@ run_refresh_all() {
     return 0
   fi
 
-  WAIT_FOR_OTHER_CHECKS=0
   for pr_number in "${pr_numbers[@]}"; do
     set +e
     check_pr "$pr_number"
@@ -833,7 +636,6 @@ run_refresh_all() {
       overall=1
     fi
   done
-  WAIT_FOR_OTHER_CHECKS="$original_wait_for_other_checks"
 
   return "$overall"
 }
@@ -846,11 +648,6 @@ run_single_pr() {
   result=$?
   set -e
 
-  # A failed evaluation must not leave the pending status from the wait behind.
-  if [[ "$result" -eq 1 && -n "$PENDING_STATUS_SHA" ]]; then
-    publish_status "$PENDING_STATUS_SHA" error "Review-thread evaluation failed; see the workflow run." || true
-  fi
-
   if [[ "$result" -eq 2 ]]; then
     if bool_is_true "$WAIT_FOR_OTHER_CHECKS"; then
       echo "::notice::PR #$PR_NUMBER still has unresolved review state; published '$REQUIRED_CONTEXT' and keeping this refresh workflow successful."
@@ -860,8 +657,6 @@ run_single_pr() {
   fi
   return "$result"
 }
-
-PENDING_STATUS_SHA=""
 
 main() {
   PR_NUMBER="$(resolve_pr_number)"

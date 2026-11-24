@@ -1,0 +1,23 @@
+# Verification only (draft PR, not for merge): drives the local reusable
+# workflow from review events on this PR.
+name: Selftest Review Thread Resolution
+
+on:
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  refresh:
+    uses: ./.github/workflows/review-thread-resolution.yml
+    permissions:
+      contents: read
+      checks: write
+      statuses: write
+      issues: read
+      pull-requests: read
+    with:
+      base_branch: main
+      required_context: Check unresolved comments
+      ci_ref: ${{ github.event.pull_request.head.sha }}

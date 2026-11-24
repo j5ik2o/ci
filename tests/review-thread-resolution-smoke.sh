@@ -25,8 +25,43 @@ fi
 args="$*"
 
 if [[ "$args" == *"graphql"* ]]; then
+  # An empty or whitespace-only body from a successful gh call.
+  if [[ -n "${GH_EMPTY_FETCH:-}" && "$args" == *"${GH_EMPTY_FETCH}(first: 100"* ]]; then
+    [[ "${GH_EMPTY_BODY:-empty}" == "blank" ]] && printf '  \n\n'
+    exit 0
+  fi
   if [[ "$args" == *"reviewThreads"* ]]; then
-    printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+    second_page=0
+    [[ "$args" == *"cursor=threads-2"* ]] && second_page=1
+    case "${GH_THREADS:-none}" in
+      unresolved)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"a.sh","line":1,"comments":{"nodes":[{"url":"https://github.com/j5ik2o/g2g/pull/27#discussion_r1","author":{"login":"human-reviewer"}}]}}]}}}}}'
+        ;;
+      paged|page2-error)
+        if [[ "$second_page" -eq 0 ]]; then
+          printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"threads-2"},"nodes":[{"isResolved":true,"path":"a.sh","line":1,"comments":{"nodes":[]}}]}}}}}'
+        elif [[ "$GH_THREADS" == "paged" ]]; then
+          printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"b.sh","line":2,"comments":{"nodes":[{"url":"https://github.com/j5ik2o/g2g/pull/27#discussion_r2","author":{"login":"human-reviewer"}}]}}]}}}}}'
+        else
+          printf '%s\n' '{"errors":[{"message":"Something went wrong on page 2"}]}'
+        fi
+        ;;
+      no-has-next)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"endCursor":"threads-2"},"nodes":[]}}}}}'
+        ;;
+      no-end-cursor)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}'
+        ;;
+      null-pr)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":null}}}'
+        ;;
+      not-json)
+        printf '%s\n' '<html>502 Bad Gateway</html>'
+        ;;
+      *)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+        ;;
+    esac
   elif [[ "$args" == *"comments(first: 100"* ]]; then
     if [[ "${GH_FAIL_COMMENTS:-0}" == "1" ]]; then
       echo "comments query failed" >&2
@@ -110,6 +145,7 @@ reset_logs() {
   : > "$tmpdir/calls.log"
   : > "$tmpdir/sleeps.log"
   : > "$tmpdir/status-payloads.log"
+  : > "$tmpdir/summary.md"
 }
 
 run_script() {
@@ -131,6 +167,7 @@ run_script() {
   PR_NUMBER="${TEST_PR_NUMBER-27}" \
   GITHUB_EVENT_PATH="${TEST_EVENT_PATH:-}" \
   GITHUB_RUN_ID="123" \
+  GITHUB_STEP_SUMMARY="$tmpdir/summary.md" \
     bash "$root/scripts/review-thread-resolution.sh"
 }
 
@@ -194,12 +231,52 @@ if [[ "$(wc -l < "$tmpdir/status-payloads.log")" -ne 1 ]] \
   exit 1
 fi
 
-# A failed GraphQL fetch fails the run instead of publishing success.
+# A failed or malformed fetch after the head is known fails the run and
+# publishes error, so an earlier success on the same head does not stay.
+expect_error_status() {
+  local label="$1"
+  shift
+  reset_logs
+  (export "$@"; run_script issue_comment true) > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
+  if [[ "$status" -ne 1 ]] \
+    || [[ "$(wc -l < "$tmpdir/status-payloads.log")" -ne 1 ]] \
+    || ! grep -q '"state":"error"' "$tmpdir/status-payloads.log"; then
+    cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
+    echo "$label must fail the run and publish only error (exit $status)." >&2
+    exit 1
+  fi
+}
+expect_error_status "a failed comment fetch" GH_FAIL_COMMENTS=1
+expect_error_status "an error on a later thread page" GH_THREADS=page2-error
+expect_error_status "a page without hasNextPage" GH_THREADS=no-has-next
+expect_error_status "a page with hasNextPage but no endCursor" GH_THREADS=no-end-cursor
+expect_error_status "a response with a null pullRequest" GH_THREADS=null-pr
+expect_error_status "a response that is not JSON" GH_THREADS=not-json
+for fetch in reviewThreads comments reviews; do
+  for body in empty blank; do
+    expect_error_status "an $body $fetch response" GH_EMPTY_FETCH="$fetch" GH_EMPTY_BODY="$body"
+  done
+done
+
+# Unresolved threads, including one on a later page, publish failure.
+for mode in unresolved paged; do
+  reset_logs
+  GH_THREADS="$mode" run_script "issue_comment" "true" > "$tmpdir/out.log" 2>&1 || {
+    cat "$tmpdir/out.log" >&2
+    echo "an event refresh with unresolved threads ($mode) must keep the job successful." >&2
+    exit 1
+  }
+  if ! grep -q '"state":"failure"' "$tmpdir/status-payloads.log" \
+    || ! grep -q '^1 unresolved PR review thread' "$tmpdir/summary.md"; then
+    cat "$tmpdir/out.log" "$tmpdir/summary.md" "$tmpdir/status-payloads.log" >&2
+    echo "unresolved threads ($mode) must be counted and publish failure." >&2
+    exit 1
+  fi
+done
 reset_logs
-GH_FAIL_COMMENTS=1 run_script "issue_comment" "true" > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
-if [[ "$status" -ne 1 ]] || [[ -s "$tmpdir/status-payloads.log" ]]; then
-  cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
-  echo "a failed comment fetch must fail the run without publishing (exit $status)." >&2
+GH_THREADS=unresolved run_script "issue_comment" "false" > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
+if [[ "$status" -ne 1 ]]; then
+  echo "the CI gate mode must fail the job on unresolved threads (exit $status)." >&2
   exit 1
 fi
 

@@ -74,16 +74,16 @@ on:
 
 permissions:
   contents: read
-  checks: write
   issues: read
   pull-requests: read
   statuses: write
 
 # One run per PR and mode. The PR number follows resolve_pr_number in the
 # script: an explicit pr_number (not empty, not "null") wins over the event's
-# PR. Event-driven refreshes cancel the older run: the
-# newest run always finishes and publishes the commit status, so cancellation
-# never leaves the status context stale or cancelled. CI gate runs queue
+# PR. Event-driven refreshes cancel the older run. Cancellation never touches
+# the commit status: nothing newer cancels the newest run, and that run
+# publishes success or failure, or error when the evaluation fails after the
+# PR head is known (for example a GitHub API failure). CI gate runs queue
 # instead, because their job result feeds the caller's aggregate CI job.
 # Refresh-all runs (schedule, workflow_dispatch without pr_number) share one
 # queued group; non-PR issue comments get their own group and exit early.

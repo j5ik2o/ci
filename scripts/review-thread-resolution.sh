@@ -142,6 +142,7 @@ fetch_pr_head_oid() {
 publish_status() {
   local head_ref_oid="$1"
   local state="$2"
+  local description="${3:-Review-thread gate ${2}.}"
   local payload
   local response
   local error_file
@@ -154,7 +155,7 @@ publish_status() {
     jq -n \
       --arg state "$state" \
       --arg target_url "$RUN_URL" \
-      --arg description "Review-thread gate ${state}." \
+      --arg description "$description" \
       --arg context "$REQUIRED_CONTEXT" \
       '{
         state: $state,
@@ -258,8 +259,12 @@ fetch_unresolved_threads() {
       return 1
     fi
 
-    jq -c '.data.repository.pullRequest.reviewThreads.nodes
-      | map(select(.isResolved == false))' <<< "$response" >> "$pages_file"
+    if ! jq -c '(.data.repository.pullRequest.reviewThreads.nodes | arrays)
+      // error("response has no reviewThreads.nodes")
+      | map(select(.isResolved == false))' <<< "$response" >> "$pages_file"; then
+      echo "::error::Unexpected GitHub GraphQL response while fetching PR review threads on page $page."
+      return 1
+    fi
 
     has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<< "$response")"
     if [[ "$has_next" != "true" ]]; then
@@ -269,7 +274,7 @@ fetch_unresolved_threads() {
     page=$((page + 1))
   done
 
-  jq -c -s 'add // []' "$pages_file"
+  jq -c -s 'add // []' "$pages_file" || return 1
 }
 
 fetch_top_level_comments() {
@@ -328,7 +333,11 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    jq -c '.data.repository.pullRequest.comments.nodes' <<< "$response" >> "$pages_file"
+    if ! jq -c '(.data.repository.pullRequest.comments.nodes | arrays)
+      // error("response has no comments.nodes")' <<< "$response" >> "$pages_file"; then
+      echo "::error::Unexpected GitHub GraphQL response while fetching top-level PR comments on page $page."
+      return 1
+    fi
 
     has_next="$(jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage' <<< "$response")"
     if [[ "$has_next" != "true" ]]; then
@@ -385,7 +394,8 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    jq -c '.data.repository.pullRequest.reviews.nodes
+    if ! jq -c '(.data.repository.pullRequest.reviews.nodes | arrays)
+        // error("response has no reviews.nodes")
         | map(select((.body // "") != "" and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")))
         | map({
             url,
@@ -395,7 +405,10 @@ fetch_top_level_comments() {
             updatedAt: (.updatedAt // .submittedAt),
             authorAssociation,
             author
-          })' <<< "$response" >> "$pages_file"
+          })' <<< "$response" >> "$pages_file"; then
+      echo "::error::Unexpected GitHub GraphQL response while fetching PR reviews on page $page."
+      return 1
+    fi
 
     has_next="$(jq -r '.data.repository.pullRequest.reviews.pageInfo.hasNextPage' <<< "$response")"
     if [[ "$has_next" != "true" ]]; then
@@ -405,7 +418,7 @@ fetch_top_level_comments() {
     page=$((page + 1))
   done
 
-  jq -c -s 'add // []' "$pages_file"
+  jq -c -s 'add // []' "$pages_file" || return 1
 }
 
 filter_unacknowledged_comments() {
@@ -507,7 +520,20 @@ build_summary() {
   }
 }
 
+# Evaluates one PR. When the evaluation fails after the head SHA is known, it
+# publishes error so an earlier success on the same head does not stay.
 check_pr() {
+  local result=0
+
+  ERROR_STATUS_SHA=""
+  evaluate_pr "$1" || result=$?
+  if [[ "$result" -eq 1 && -n "$ERROR_STATUS_SHA" ]]; then
+    publish_status "$ERROR_STATUS_SHA" error "Review-thread evaluation failed; see the workflow run." || true
+  fi
+  return "$result"
+}
+
+evaluate_pr() {
   local pr_number="$1"
   local pr_response
   local pr_author
@@ -565,6 +591,9 @@ check_pr() {
     echo "::notice::Skipping synthetic commit status for Dependabot PR author ($pr_author)."
     can_publish_status=0
   fi
+  if [[ "$can_publish_status" -eq 1 ]]; then
+    ERROR_STATUS_SHA="$head_ref_oid"
+  fi
 
   latest_head_ref_oid="$(fetch_pr_head_oid "$pr_number")" || return 1
   if [[ -z "$latest_head_ref_oid" || "$latest_head_ref_oid" == "null" ]]; then
@@ -574,17 +603,24 @@ check_pr() {
   if [[ "$latest_head_ref_oid" != "$head_ref_oid" ]]; then
     echo "::notice::PR #$pr_number head changed from $head_ref_oid to $latest_head_ref_oid; evaluating latest head."
     head_ref_oid="$latest_head_ref_oid"
+    if [[ "$can_publish_status" -eq 1 ]]; then
+      ERROR_STATUS_SHA="$head_ref_oid"
+    fi
   fi
 
   unresolved="$(fetch_unresolved_threads "$pr_number")" || return 1
-  unresolved_count="$(jq 'length' <<< "$unresolved")"
+  unresolved_count="$(jq 'length' <<< "$unresolved")" || return 1
   if [[ "$unresolved_count" -eq 0 ]]; then
     echo "No unresolved PR review threads for PR #$pr_number."
   fi
 
   top_level_comments="$(fetch_top_level_comments "$pr_number")" || return 1
   unacknowledged="$(filter_unacknowledged_comments "$top_level_comments" "$pr_author" "$pr_author_type")" || return 1
-  unacknowledged_count="$(jq 'length' <<< "$unacknowledged")"
+  unacknowledged_count="$(jq 'length' <<< "$unacknowledged")" || return 1
+  if [[ ! "$unresolved_count" =~ ^[0-9]+$ || ! "$unacknowledged_count" =~ ^[0-9]+$ ]]; then
+    echo "::error::Review-thread counts are not numbers (threads: '$unresolved_count', comments: '$unacknowledged_count')."
+    return 1
+  fi
   if [[ "$unacknowledged_count" -eq 0 ]]; then
     echo "No unacknowledged top-level PR comments or review summaries for PR #$pr_number."
   fi
@@ -657,6 +693,8 @@ run_single_pr() {
   fi
   return "$result"
 }
+
+ERROR_STATUS_SHA=""
 
 main() {
   PR_NUMBER="$(resolve_pr_number)"

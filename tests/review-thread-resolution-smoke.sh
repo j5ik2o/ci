@@ -26,7 +26,31 @@ args="$*"
 
 if [[ "$args" == *"graphql"* ]]; then
   if [[ "$args" == *"reviewThreads"* ]]; then
-    printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+    second_page=0
+    [[ "$args" == *"cursor=threads-2"* ]] && second_page=1
+    case "${GH_THREADS:-none}" in
+      unresolved)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"a.sh","line":1,"comments":{"nodes":[{"url":"https://github.com/j5ik2o/g2g/pull/27#discussion_r1","author":{"login":"human-reviewer"}}]}}]}}}}}'
+        ;;
+      paged|page2-error)
+        if [[ "$second_page" -eq 0 ]]; then
+          printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"threads-2"},"nodes":[{"isResolved":true,"path":"a.sh","line":1,"comments":{"nodes":[]}}]}}}}}'
+        elif [[ "$GH_THREADS" == "paged" ]]; then
+          printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"b.sh","line":2,"comments":{"nodes":[{"url":"https://github.com/j5ik2o/g2g/pull/27#discussion_r2","author":{"login":"human-reviewer"}}]}}]}}}}}'
+        else
+          printf '%s\n' '{"errors":[{"message":"Something went wrong on page 2"}]}'
+        fi
+        ;;
+      null-pr)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":null}}}'
+        ;;
+      not-json)
+        printf '%s\n' '<html>502 Bad Gateway</html>'
+        ;;
+      *)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+        ;;
+    esac
   elif [[ "$args" == *"comments(first: 100"* ]]; then
     if [[ "${GH_FAIL_COMMENTS:-0}" == "1" ]]; then
       echo "comments query failed" >&2
@@ -194,12 +218,45 @@ if [[ "$(wc -l < "$tmpdir/status-payloads.log")" -ne 1 ]] \
   exit 1
 fi
 
-# A failed GraphQL fetch fails the run instead of publishing success.
+# A failed or malformed fetch after the head is known fails the run and
+# publishes error, so an earlier success on the same head does not stay.
+expect_error_status() {
+  local label="$1"
+  shift
+  reset_logs
+  (export "$@"; run_script issue_comment true) > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
+  if [[ "$status" -ne 1 ]] \
+    || [[ "$(wc -l < "$tmpdir/status-payloads.log")" -ne 1 ]] \
+    || ! grep -q '"state":"error"' "$tmpdir/status-payloads.log"; then
+    cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
+    echo "$label must fail the run and publish only error (exit $status)." >&2
+    exit 1
+  fi
+}
+expect_error_status "a failed comment fetch" GH_FAIL_COMMENTS=1
+expect_error_status "an error on a later thread page" GH_THREADS=page2-error
+expect_error_status "a response with a null pullRequest" GH_THREADS=null-pr
+expect_error_status "a response that is not JSON" GH_THREADS=not-json
+
+# Unresolved threads, including one on a later page, publish failure.
+for mode in unresolved paged; do
+  reset_logs
+  GH_THREADS="$mode" run_script "issue_comment" "true" > "$tmpdir/out.log" 2>&1 || {
+    cat "$tmpdir/out.log" >&2
+    echo "an event refresh with unresolved threads ($mode) must keep the job successful." >&2
+    exit 1
+  }
+  if ! grep -q '"state":"failure"' "$tmpdir/status-payloads.log" \
+    || ! grep -q '^1 unresolved PR review thread' "$tmpdir/out.log"; then
+    cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
+    echo "unresolved threads ($mode) must be counted and publish failure." >&2
+    exit 1
+  fi
+done
 reset_logs
-GH_FAIL_COMMENTS=1 run_script "issue_comment" "true" > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
-if [[ "$status" -ne 1 ]] || [[ -s "$tmpdir/status-payloads.log" ]]; then
-  cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
-  echo "a failed comment fetch must fail the run without publishing (exit $status)." >&2
+GH_THREADS=unresolved run_script "issue_comment" "false" > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
+if [[ "$status" -ne 1 ]]; then
+  echo "the CI gate mode must fail the job on unresolved threads (exit $status)." >&2
   exit 1
 fi
 

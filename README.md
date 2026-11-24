@@ -55,7 +55,6 @@ jobs:
     uses: j5ik2o/ci/.github/workflows/review-thread-resolution.yml@v1
     permissions:
       contents: read
-      checks: write
       statuses: write
       issues: read
       pull-requests: read
@@ -78,9 +77,12 @@ For branch protection, prefer requiring the synthetic status context
 `Check unresolved comments`. Event-driven refresh runs publish that context but
 do not fail the workflow job for unresolved review state. Do not require the
 `Refresh review-thread state` job: refresh runs for the same PR share one
-concurrency group, and a newer event cancels the older run. The newest run
-always finishes and publishes the status, so the status context never stays
-cancelled or stale. Refresh-all runs (`schedule`, `workflow_dispatch` without
+concurrency group, and a newer event cancels the older run. Cancellation
+never touches the status: the newest run publishes `success` or `failure`. If
+its evaluation fails after the PR head is known, for example on a GitHub API
+failure, it publishes `error`, so an earlier `success` on the same head does
+not stay. If it fails before that, or the job times out, nothing is published
+and the run shows as failed. Refresh-all runs (`schedule`, `workflow_dispatch` without
 `pr_number`) share one queued group.
 
 The refresh never waits for other PR checks. It evaluates the review state as
@@ -251,3 +253,6 @@ node --test aislop/check-aislop.test.mjs
 ```bash
 bash scripts/validate-workflows.sh
 ```
+
+The `Validate` workflow runs this and `tests/review-thread-resolution-smoke.sh`
+on every PR and on pushes to `main`.

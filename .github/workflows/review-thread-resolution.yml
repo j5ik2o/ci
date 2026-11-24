@@ -19,7 +19,7 @@ on:
         type: string
         default: Check unresolved comments
       wait_for_other_checks:
-        description: Wait for other PR checks before evaluating review threads.
+        description: Mode. "true" (default) is an event refresh whose job succeeds even with unresolved review state; "false" is a CI gate whose job fails on it. Neither mode waits for other checks (the name is kept for compatibility).
         required: false
         type: string
         default: "true"
@@ -79,15 +79,32 @@ permissions:
   pull-requests: read
   statuses: write
 
+# One run per PR and mode. The PR number follows resolve_pr_number in the
+# script: an explicit pr_number (not empty, not "null") wins over the event's
+# PR. Event-driven refreshes cancel the older run: the
+# newest run always finishes and publishes the commit status, so cancellation
+# never leaves the status context stale or cancelled. CI gate runs queue
+# instead, because their job result feeds the caller's aggregate CI job.
+# Refresh-all runs (schedule, workflow_dispatch without pr_number) share one
+# queued group; non-PR issue comments get their own group and exit early.
 concurrency:
-  group: ${{ inputs.wait_for_other_checks == 'false' && format('review-thread-resolution-ci-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id) || format('review-thread-resolution-event-{0}', github.run_id) }}
-  cancel-in-progress: false
+  group: >-
+    ${{ format('review-thread-resolution-{0}-{1}',
+      inputs.wait_for_other_checks == 'false' && 'ci' || 'event',
+      (inputs.pr_number != '' && inputs.pr_number != 'null' && inputs.pr_number)
+        || github.event.pull_request.number
+        || (github.event.issue.pull_request && github.event.issue.number)
+        || github.event.workflow_run.pull_requests[0].number
+        || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'refresh-all')
+        || format('run-{0}', github.run_id)) }}
+  cancel-in-progress: ${{ inputs.wait_for_other_checks != 'false' && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && (inputs.pr_number == '' || inputs.pr_number == 'null')) }}
 
 jobs:
   unresolved-comments:
     name: ${{ inputs.wait_for_other_checks == 'false' && 'Evaluate CI review-thread gate' || 'Refresh review-thread state' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A single PR takes seconds; refresh-all takes about 4 seconds per open PR.
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (inputs.pr_number == '' || inputs.pr_number == 'null') && 30 || 10 }}
     steps:
       - name: Checkout shared CI scripts
         uses: actions/checkout@v6

@@ -18,7 +18,7 @@ inputs:
     required: false
     default: Check unresolved comments
   wait_for_other_checks:
-    description: Wait for other PR checks before evaluating review threads.
+    description: Mode. "true" (default) is an event refresh whose job succeeds even with unresolved review state; "false" is a CI gate whose job fails on it. Neither mode waits for other checks (the name is kept for compatibility).
     required: false
     default: "true"
   publish_status:

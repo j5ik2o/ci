@@ -32,6 +32,10 @@ on:
     types: [created, edited, deleted]
   issue_comment:
     types: [created, edited, deleted]
+  workflow_run:
+    # List this repository's other workflows (not this one).
+    workflows: [CI]
+    types: [completed]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
@@ -41,7 +45,7 @@ on:
         required: false
         type: string
       wait_for_other_checks:
-        description: Wait for other PR checks before evaluating review threads.
+        description: Run as an event refresh (true) or as a CI gate (false).
         required: false
         default: true
         type: boolean
@@ -68,14 +72,37 @@ The `pull_request` trigger covers `opened`, `synchronize`, `reopened`, and
 context instead of relying on later review or comment events. The
 `wait_for_other_checks` expression only honors the manual input on
 `workflow_dispatch` runs, because `inputs.*` is empty for every other event
-type; all other runs wait for the other PR checks.
+type; all other runs are event refreshes.
 
 For branch protection, prefer requiring the synthetic status context
 `Check unresolved comments`. Event-driven refresh runs publish that context but
-do not fail the workflow job for unresolved review state, and concurrent refresh
-runs use per-run concurrency groups so GitHub Actions does not cancel older
-pending refresh jobs. This keeps the synthetic status as the only branch
-protection signal while avoiding cancelled refresh check-runs on the PR head.
+do not fail the workflow job for unresolved review state. Do not require the
+`Refresh review-thread state` job: refresh runs for the same PR share one
+concurrency group, and a newer event cancels the older run. The newest run
+always finishes and publishes the status, so the status context never stays
+cancelled or stale. Refresh-all runs (`schedule`, `workflow_dispatch` without
+`pr_number`) share one queued group.
+
+The refresh never waits for other PR checks. It evaluates the review state as
+it is at that moment and publishes `success` or `failure` right away, so it
+holds a runner for only a few seconds. Comments and reviews posted by review
+bots trigger another refresh through the review and comment events. Comments
+posted with `GITHUB_TOKEN`, such as those from TAKT Review, do not trigger
+these events, and neither does the completion of another workflow. To
+re-evaluate after those, add a `workflow_run` trigger that lists the caller's
+other workflows:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [CI, TAKT Review]
+    types: [completed]
+```
+
+The shared workflow takes the PR number from `workflow_run.pull_requests` and
+skips `workflow_run` events that have no same-repository PR. GitHub leaves that
+list empty for runs started by `issue_comment` (for example an `@takt` comment)
+and for fork PRs, so those runs still rely on a later event or the schedule.
 
 CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
 unresolved review state still fails the reusable workflow job so a caller's

@@ -3,6 +3,10 @@ set -euo pipefail
 REPOSITORY="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 REQUIRED_CONTEXT="${REQUIRED_CONTEXT:-Check unresolved comments}"
+# The refresh never waits for other checks; it evaluates the current state and
+# publishes a conclusion. The input name stays for compatibility and now picks
+# the mode: true (default) is an event refresh whose job succeeds even with
+# unresolved review state, false is a CI gate whose job fails on it.
 WAIT_FOR_OTHER_CHECKS="${WAIT_FOR_OTHER_CHECKS:-1}"
 PUBLISH_STATUS="${PUBLISH_STATUS:-1}"
 SKIP_STATUS_FOR_DEPENDABOT="${SKIP_STATUS_FOR_DEPENDABOT:-1}"
@@ -84,6 +88,8 @@ resolve_pr_number() {
       url_number(.review.pull_request_url)
     elif ((.comment.pull_request_url? // "") | length) > 0 then
       url_number(.comment.pull_request_url)
+    elif (.workflow_run.pull_requests[0].number? // null) != null then
+      (.workflow_run.pull_requests[0].number | tostring)
     else
       ""
     end
@@ -131,195 +137,6 @@ fetch_pr_head_oid() {
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "repos/$OWNER/$REPO/pulls/$pr_number" \
     --jq '.head.sha // ""'
-}
-
-fetch_pending_check_names() {
-  local head_ref_oid="$1"
-  local check_runs_response
-  local status_response
-
-  check_runs_response="$(
-    gh api \
-      --paginate \
-      --slurp \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "repos/$OWNER/$REPO/commits/$head_ref_oid/check-runs?per_page=100&filter=latest"
-  )" || return 1
-
-  status_response="$(
-    gh api \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "repos/$OWNER/$REPO/commits/$head_ref_oid/status"
-  )" || return 1
-
-  jq -n -r \
-    --arg required_context "$REQUIRED_CONTEXT" \
-    --arg current_run_id "${GITHUB_RUN_ID:-}" \
-    --argjson check_run_pages "$check_runs_response" \
-    --argjson status_response "$status_response" '
-      def excluded_check_name:
-        (.name // "") as $name
-        | ($name | split(" / ")[-1]) as $job_name
-        | $name == $required_context
-          or $job_name == $required_context
-          or $name == "Refresh review-thread state"
-          or $job_name == "Refresh review-thread state"
-          or $name == "Evaluate CI review-thread gate"
-          or $job_name == "Evaluate CI review-thread gate"
-          or $name == "Review Thread Resolution"
-          or $job_name == "Review Thread Resolution"
-          or $name == "Review Thread Refresh"
-          or $job_name == "Review Thread Refresh"
-          or $name == "CI Review Thread Gate"
-          or $job_name == "CI Review Thread Gate";
-      def current_workflow_run:
-        ($current_run_id | length) > 0
-        and ((.details_url // "") | contains("/actions/runs/" + $current_run_id + "/"));
-
-      (
-        [
-          $check_run_pages[]?.check_runs[]?
-          | select((excluded_check_name | not) and (current_workflow_run | not))
-          | select((.status // "") != "completed")
-          | "check: \(.name // "unknown") [\(.status // "unknown")]"
-        ]
-        +
-        [
-          ($status_response.statuses // [])
-          | group_by(.context // "")
-          | .[]
-          | max_by(.updated_at // .created_at // "")
-          | select((.context // "") != $required_context)
-          | select((.state // "") == "pending" or (.state // "") == "expected")
-          | "status: \(.context // "unknown") [\(.state // "unknown")]"
-        ]
-      )[]
-    '
-}
-
-error_is_resource_inaccessible() {
-  grep -qi 'Resource not accessible by integration' "$1"
-}
-
-wait_for_checks() {
-  local pr_number="$1"
-  local head_ref_oid="$2"
-  local max_attempts
-  local sleep_seconds=5
-  local max_sleep_seconds=30
-  local attempt=0
-  local current_head_ref_oid
-  local pending_checks
-  local error_file
-
-  if ! bool_is_true "$WAIT_FOR_OTHER_CHECKS"; then
-    echo "Skipping other-check wait because wait_for_other_checks=false."
-    return 0
-  fi
-
-  if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-    max_attempts=3
-  else
-    max_attempts=60
-  fi
-
-  while [[ "$attempt" -lt "$max_attempts" ]]; do
-    attempt=$((attempt + 1))
-    error_file="$(mktemp)"
-
-    if ! current_head_ref_oid="$(fetch_pr_head_oid "$pr_number" 2> "$error_file")"; then
-      if error_is_resource_inaccessible "$error_file"; then
-        echo "::notice::Unable to inspect PR head because GitHub token cannot access a resource; evaluating review-thread state without waiting for other checks."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 0
-      fi
-      if [[ "$attempt" -eq "$max_attempts" ]]; then
-        echo "::error::Failed to fetch PR head after $max_attempts attempts."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 1
-      fi
-      echo "::warning::Failed to fetch PR head on attempt $attempt; retrying."
-      cat "$error_file" >&2
-      rm -f "$error_file"
-      sleep "$sleep_seconds"
-      if [[ "$sleep_seconds" -lt "$max_sleep_seconds" ]]; then
-        sleep_seconds=$((sleep_seconds * 2))
-        if [[ "$sleep_seconds" -gt "$max_sleep_seconds" ]]; then
-          sleep_seconds="$max_sleep_seconds"
-        fi
-      fi
-      continue
-    fi
-    rm -f "$error_file"
-
-    if [[ "$current_head_ref_oid" != "$head_ref_oid" ]]; then
-      if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "schedule" ]]; then
-        echo "::notice::PR head changed from $head_ref_oid to $current_head_ref_oid while waiting for checks; continuing on the latest head."
-        head_ref_oid="$current_head_ref_oid"
-      else
-        echo "::error::PR head changed from $head_ref_oid to $current_head_ref_oid while waiting for checks."
-        return 1
-      fi
-    fi
-
-    error_file="$(mktemp)"
-    if ! pending_checks="$(fetch_pending_check_names "$current_head_ref_oid" 2> "$error_file")"; then
-      if error_is_resource_inaccessible "$error_file"; then
-        echo "::notice::Unable to inspect other PR checks because GitHub token cannot access a check resource; evaluating review-thread state without waiting."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 0
-      fi
-      if [[ "$attempt" -eq "$max_attempts" ]]; then
-        echo "::error::Failed to fetch PR checks after $max_attempts attempts."
-        cat "$error_file" >&2
-        rm -f "$error_file"
-        return 1
-      fi
-      echo "::warning::Failed to fetch PR checks on attempt $attempt; retrying."
-      cat "$error_file" >&2
-      rm -f "$error_file"
-      sleep "$sleep_seconds"
-      if [[ "$sleep_seconds" -lt "$max_sleep_seconds" ]]; then
-        sleep_seconds=$((sleep_seconds * 2))
-        if [[ "$sleep_seconds" -gt "$max_sleep_seconds" ]]; then
-          sleep_seconds="$max_sleep_seconds"
-        fi
-      fi
-      continue
-    fi
-    rm -f "$error_file"
-
-    if [[ -z "$pending_checks" ]]; then
-      echo "All other PR checks have reached a terminal state."
-      return 0
-    fi
-
-    if [[ "$attempt" -eq "$max_attempts" ]]; then
-      if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "schedule" ]]; then
-        echo "::notice::Other PR checks are still pending; refreshing review-thread state without waiting."
-        echo "$pending_checks"
-        return 0
-      fi
-      echo "::error::Timed out waiting for other PR checks to finish before evaluating review comments."
-      echo "$pending_checks" >&2
-      return 1
-    fi
-
-    echo "Waiting for other PR checks to finish before evaluating review comments:"
-    echo "$pending_checks"
-    sleep "$sleep_seconds"
-    if [[ "$sleep_seconds" -lt "$max_sleep_seconds" ]]; then
-      sleep_seconds=$((sleep_seconds * 2))
-      if [[ "$sleep_seconds" -gt "$max_sleep_seconds" ]]; then
-        sleep_seconds="$max_sleep_seconds"
-      fi
-    fi
-  done
 }
 
 publish_status() {
@@ -384,13 +201,15 @@ publish_status() {
 
 fetch_unresolved_threads() {
   local pr_number="$1"
-  local unresolved='[]'
+  local pages_file
   local cursor=''
   local page=1
   local response
-  local page_unresolved
   local has_next
   local cursor_args
+
+  pages_file="$(mktemp)"
+  trap 'rm -f "$pages_file"; trap - RETURN' RETURN
 
   while :; do
     cursor_args=()
@@ -431,7 +250,7 @@ fetch_unresolved_threads() {
             }
           }
         '
-    )"
+    )" || return 1
 
     if jq -e '.errors? | length > 0' <<< "$response" >/dev/null; then
       echo "::error::GitHub GraphQL returned errors while fetching PR review threads on page $page."
@@ -439,11 +258,8 @@ fetch_unresolved_threads() {
       return 1
     fi
 
-    page_unresolved="$(
-      jq -c '.data.repository.pullRequest.reviewThreads.nodes
-        | map(select(.isResolved == false))' <<< "$response"
-    )"
-    unresolved="$(jq -c -n --argjson current "$unresolved" --argjson page "$page_unresolved" '$current + $page')"
+    jq -c '.data.repository.pullRequest.reviewThreads.nodes
+      | map(select(.isResolved == false))' <<< "$response" >> "$pages_file"
 
     has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<< "$response")"
     if [[ "$has_next" != "true" ]]; then
@@ -453,18 +269,20 @@ fetch_unresolved_threads() {
     page=$((page + 1))
   done
 
-  printf '%s\n' "$unresolved"
+  jq -c -s 'add // []' "$pages_file"
 }
 
 fetch_top_level_comments() {
   local pr_number="$1"
-  local comments='[]'
+  local pages_file
   local cursor=''
   local page=1
   local response
-  local page_comments
   local has_next
   local cursor_args
+
+  pages_file="$(mktemp)"
+  trap 'rm -f "$pages_file"; trap - RETURN' RETURN
 
   while :; do
     cursor_args=()
@@ -502,7 +320,7 @@ fetch_top_level_comments() {
             }
           }
         '
-    )"
+    )" || return 1
 
     if jq -e '.errors? | length > 0' <<< "$response" >/dev/null; then
       echo "::error::GitHub GraphQL returned errors while fetching top-level PR comments on page $page."
@@ -510,8 +328,7 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    page_comments="$(jq -c '.data.repository.pullRequest.comments.nodes' <<< "$response")"
-    comments="$(jq -c -n --argjson current "$comments" --argjson page "$page_comments" '$current + $page')"
+    jq -c '.data.repository.pullRequest.comments.nodes' <<< "$response" >> "$pages_file"
 
     has_next="$(jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage' <<< "$response")"
     if [[ "$has_next" != "true" ]]; then
@@ -560,7 +377,7 @@ fetch_top_level_comments() {
             }
           }
         '
-    )"
+    )" || return 1
 
     if jq -e '.errors? | length > 0' <<< "$response" >/dev/null; then
       echo "::error::GitHub GraphQL returned errors while fetching PR reviews on page $page."
@@ -568,8 +385,7 @@ fetch_top_level_comments() {
       return 1
     fi
 
-    page_comments="$(
-      jq -c '.data.repository.pullRequest.reviews.nodes
+    jq -c '.data.repository.pullRequest.reviews.nodes
         | map(select((.body // "") != "" and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")))
         | map({
             url,
@@ -579,9 +395,7 @@ fetch_top_level_comments() {
             updatedAt: (.updatedAt // .submittedAt),
             authorAssociation,
             author
-          })' <<< "$response"
-    )"
-    comments="$(jq -c -n --argjson current "$comments" --argjson page "$page_comments" '$current + $page')"
+          })' <<< "$response" >> "$pages_file"
 
     has_next="$(jq -r '.data.repository.pullRequest.reviews.pageInfo.hasNextPage' <<< "$response")"
     if [[ "$has_next" != "true" ]]; then
@@ -591,7 +405,7 @@ fetch_top_level_comments() {
     page=$((page + 1))
   done
 
-  printf '%s\n' "$comments"
+  jq -c -s 'add // []' "$pages_file"
 }
 
 filter_unacknowledged_comments() {
@@ -744,7 +558,13 @@ check_pr() {
     return 0
   fi
 
-  wait_for_checks "$pr_number" "$head_ref_oid" || return 1
+  if [[ "$head_repository" != "$OWNER/$REPO" ]]; then
+    echo "::notice::Skipping synthetic commit status for fork PR head ($head_repository)."
+    can_publish_status=0
+  elif bool_is_true "$SKIP_STATUS_FOR_DEPENDABOT" && [[ "$pr_author" == "dependabot[bot]" || "$pr_author" == "dependabot" ]]; then
+    echo "::notice::Skipping synthetic commit status for Dependabot PR author ($pr_author)."
+    can_publish_status=0
+  fi
 
   latest_head_ref_oid="$(fetch_pr_head_oid "$pr_number")" || return 1
   if [[ -z "$latest_head_ref_oid" || "$latest_head_ref_oid" == "null" ]]; then
@@ -776,14 +596,6 @@ check_pr() {
     printf '%s\n' "$summary"
   fi
 
-  if [[ "$head_repository" != "$OWNER/$REPO" ]]; then
-    echo "::notice::Skipping synthetic commit status for fork PR head ($head_repository)."
-    can_publish_status=0
-  elif bool_is_true "$SKIP_STATUS_FOR_DEPENDABOT" && [[ "$pr_author" == "dependabot[bot]" || "$pr_author" == "dependabot" ]]; then
-    echo "::notice::Skipping synthetic commit status for Dependabot PR author ($pr_author)."
-    can_publish_status=0
-  fi
-
   if [[ "$unresolved_count" -eq 0 && "$unacknowledged_count" -eq 0 ]]; then
     if [[ "$can_publish_status" -eq 1 ]]; then
       publish_status "$head_ref_oid" success || return 1
@@ -803,7 +615,6 @@ run_refresh_all() {
   local pr_numbers=()
   local overall=0
   local result
-  local original_wait_for_other_checks="$WAIT_FOR_OTHER_CHECKS"
 
   mapfile -t pr_numbers < <(list_open_prs)
   if [[ "${#pr_numbers[@]}" -eq 0 ]]; then
@@ -811,7 +622,6 @@ run_refresh_all() {
     return 0
   fi
 
-  WAIT_FOR_OTHER_CHECKS=0
   for pr_number in "${pr_numbers[@]}"; do
     set +e
     check_pr "$pr_number"
@@ -826,7 +636,6 @@ run_refresh_all() {
       overall=1
     fi
   done
-  WAIT_FOR_OTHER_CHECKS="$original_wait_for_other_checks"
 
   return "$overall"
 }
@@ -859,6 +668,10 @@ main() {
     fi
     if event_is_non_pr_issue_comment; then
       echo "Skipping non-PR issue_comment event."
+      return 0
+    fi
+    if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+      echo "Skipping workflow_run event without a same-repository PR."
       return 0
     fi
     echo "::error::Unable to resolve PR number from $EVENT_NAME event."

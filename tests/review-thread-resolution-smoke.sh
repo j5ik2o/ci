@@ -28,6 +28,10 @@ if [[ "$args" == *"graphql"* ]]; then
   if [[ "$args" == *"reviewThreads"* ]]; then
     printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
   elif [[ "$args" == *"comments(first: 100"* ]]; then
+    if [[ "${GH_FAIL_COMMENTS:-0}" == "1" ]]; then
+      echo "comments query failed" >&2
+      exit 1
+    fi
     if [[ "${GH_LARGE_COMMENTS:-0}" == "1" ]]; then
       # Two pages of large human comments; the accumulated list exceeds the
       # execve argument limits.
@@ -232,6 +236,17 @@ if [[ "$(head -n 1 "$tmpdir/status-payloads.log")" != *'"state":"pending"'* ]] \
   || [[ "$(wc -l < "$tmpdir/status-payloads.log")" -ne 2 ]]; then
   cat "$tmpdir/status-payloads.log" >&2
   echo "the wait must publish pending once, then the final conclusion." >&2
+  exit 1
+fi
+
+# A failed evaluation after the wait replaces the pending status with an error.
+reset_logs
+GH_FAIL_COMMENTS=1 GH_PENDING_CHECK=1 TEST_WAIT_TIMEOUT_SECONDS=10 run_script "issue_comment" "true" > "$tmpdir/out.log" 2>&1 && status=0 || status=$?
+if [[ "$status" -ne 1 ]] \
+  || [[ "$(head -n 1 "$tmpdir/status-payloads.log")" != *'"state":"pending"'* ]] \
+  || [[ "$(tail -n 1 "$tmpdir/status-payloads.log")" != 'head-sha '*'"state":"error"'* ]]; then
+  cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
+  echo "a failed evaluation must fail the run and replace pending with error (exit $status)." >&2
   exit 1
 fi
 

@@ -96,7 +96,12 @@ on:
 ```
 
 The shared workflow takes the PR number from `workflow_run.pull_requests` and
-skips `workflow_run` events that have no same-repository PR.
+skips `workflow_run` events that have no same-repository PR. GitHub leaves that
+list empty for runs started by `issue_comment` (for example an `@takt` comment)
+and for fork PRs, so those runs still rely on a later event or the schedule.
+
+If an evaluation fails after the refresh published `pending`, the refresh
+replaces it with `error` so the status context does not stay pending.
 
 CI gate callers should pass `wait_for_other_checks: "false"`. In that mode,
 unresolved review state still fails the reusable workflow job so a caller's

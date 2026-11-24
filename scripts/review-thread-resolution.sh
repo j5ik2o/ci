@@ -311,6 +311,7 @@ wait_for_checks() {
     if [[ "$published_pending" -eq 0 && "$can_publish_status" -eq 1 ]]; then
       publish_status "$head_ref_oid" pending "Waiting for other PR checks." || return 1
       published_pending=1
+      PENDING_STATUS_SHA="$head_ref_oid"
     fi
 
     if [[ "$slept_seconds" -ge "$wait_budget_seconds" ]]; then
@@ -442,7 +443,7 @@ fetch_unresolved_threads() {
             }
           }
         '
-    )"
+    )" || return 1
 
     if jq -e '.errors? | length > 0' <<< "$response" >/dev/null; then
       echo "::error::GitHub GraphQL returned errors while fetching PR review threads on page $page."
@@ -512,7 +513,7 @@ fetch_top_level_comments() {
             }
           }
         '
-    )"
+    )" || return 1
 
     if jq -e '.errors? | length > 0' <<< "$response" >/dev/null; then
       echo "::error::GitHub GraphQL returned errors while fetching top-level PR comments on page $page."
@@ -569,7 +570,7 @@ fetch_top_level_comments() {
             }
           }
         '
-    )"
+    )" || return 1
 
     if jq -e '.errors? | length > 0' <<< "$response" >/dev/null; then
       echo "::error::GitHub GraphQL returned errors while fetching PR reviews on page $page."
@@ -845,6 +846,11 @@ run_single_pr() {
   result=$?
   set -e
 
+  # A failed evaluation must not leave the pending status from the wait behind.
+  if [[ "$result" -eq 1 && -n "$PENDING_STATUS_SHA" ]]; then
+    publish_status "$PENDING_STATUS_SHA" error "Review-thread evaluation failed; see the workflow run." || true
+  fi
+
   if [[ "$result" -eq 2 ]]; then
     if bool_is_true "$WAIT_FOR_OTHER_CHECKS"; then
       echo "::notice::PR #$PR_NUMBER still has unresolved review state; published '$REQUIRED_CONTEXT' and keeping this refresh workflow successful."
@@ -854,6 +860,8 @@ run_single_pr() {
   fi
   return "$result"
 }
+
+PENDING_STATUS_SHA=""
 
 main() {
   PR_NUMBER="$(resolve_pr_number)"

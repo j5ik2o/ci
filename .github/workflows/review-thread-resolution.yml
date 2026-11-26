@@ -61,7 +61,6 @@ on:
           renovate	### Edited/Blocked Notification
           codecov	## [Codecov](
           chatgpt-codex-connector	Codex Review
-          chatgpt-codex-connector	You have reached your Codex usage limits for code reviews.
       extra_ignored_auto_report_author_patterns:
         description: Additional newline-separated author and literal substring pairs appended to ignored_auto_report_author_patterns.
         required: false

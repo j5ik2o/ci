@@ -14,7 +14,7 @@ EVENT_NAME="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
 PR_NUMBER="${PR_NUMBER:-}"
 RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}}"
 DEFAULT_IGNORED_AUTO_REPORT_PATTERNS=$'<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment by CodeRabbit for review status -->\n<!-- walkthrough_start -->\n<!-- pre_merge_checks_walkthrough_start -->\n<!-- BUGBOT_REVIEW -->\n<!-- devin-review-badge-begin -->'
-DEFAULT_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS=$'coderabbitai\t## Review limit reached\ncoderabbitai\t## Walkthrough\nrenovate\t### Edited Notification\nrenovate\t### Blocked Notification\nrenovate\t### Edited/Blocked Notification\ncodecov\t## [Codecov](\nchatgpt-codex-connector\tCodex Review'
+DEFAULT_IGNORED_AUTO_REPORT_AUTHOR_PATTERNS=$'coderabbitai\t## Review limit reached\ncoderabbitai\t## Walkthrough\nrenovate\t### Edited Notification\nrenovate\t### Blocked Notification\nrenovate\t### Edited/Blocked Notification\ncodecov\t## [Codecov](\nchatgpt-codex-connector\tCodex Review\nchatgpt-codex-connector\tYou have reached your Codex usage limits for code reviews.'
 IGNORED_AUTO_REPORT_PATTERNS="${IGNORED_AUTO_REPORT_PATTERNS:-$DEFAULT_IGNORED_AUTO_REPORT_PATTERNS}"
 EXTRA_IGNORED_AUTO_REPORT_PATTERNS="${EXTRA_IGNORED_AUTO_REPORT_PATTERNS:-}"
 if [[ -n "$EXTRA_IGNORED_AUTO_REPORT_PATTERNS" ]]; then

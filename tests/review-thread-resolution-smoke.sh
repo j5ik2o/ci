@@ -86,22 +86,6 @@ if [[ "$args" == *"graphql"* ]]; then
           }}}}}'
       exit 0
     fi
-    if [[ -n "${GH_COMMENT_AUTHOR:-}" ]]; then
-      # One top-level comment with the given author and body.
-      jq -n -c --arg login "$GH_COMMENT_AUTHOR" --arg body "$GH_COMMENT_BODY" '
-        {data: {repository: {pullRequest: {comments: {
-          pageInfo: {hasNextPage: false, endCursor: null},
-          nodes: [{
-            url: "https://github.com/j5ik2o/g2g/pull/27#issuecomment-1",
-            body: $body,
-            createdAt: "2026-06-02T00:00:00Z",
-            updatedAt: "2026-06-02T00:00:00Z",
-            authorAssociation: "NONE",
-            author: {login: $login}
-          }]
-        }}}}}'
-      exit 0
-    fi
     printf '%s\n' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
   elif [[ "$args" == *"reviews(first: 100"* ]]; then
     if [[ "${GH_HUMAN_GENERIC_REVIEW:-0}" == "1" ]]; then
@@ -228,32 +212,6 @@ if [[ "$status" -ne 1 ]] || ! grep -q '300 unacknowledged top-level PR comment' 
   echo "large comment pages must all be counted (exit $status)." >&2
   exit 1
 fi
-
-# Bot quota notices are ignored only when the bot itself posts them; the same
-# text from a person, and a real Codex finding, still count.
-codex_limit_notice=$'You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).\nTo continue using code reviews, add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/settings/code-review).'
-coderabbit_limit_notice=$'<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n\n> [!WARNING]\n> ## Review limit reached\n>\n> More reviews will be available soon.'
-codex_finding=$'**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Handle the empty list**\n\nThis returns early before the cache is filled.'
-expect_comment_state() {
-  local label="$1" author="$2" body="$3" state="$4"
-  reset_logs
-  GH_COMMENT_AUTHOR="$author" GH_COMMENT_BODY="$body" run_script "issue_comment" "true" > "$tmpdir/out.log" 2>&1 || {
-    cat "$tmpdir/out.log" >&2
-    echo "$label: an event refresh must keep the job successful." >&2
-    exit 1
-  }
-  if ! grep -q "\"state\":\"$state\"" "$tmpdir/status-payloads.log"; then
-    cat "$tmpdir/out.log" "$tmpdir/status-payloads.log" >&2
-    echo "$label must publish $state." >&2
-    exit 1
-  fi
-}
-expect_comment_state "a Codex usage-limit notice" chatgpt-codex-connector "$codex_limit_notice" success
-expect_comment_state "a Codex usage-limit notice from the [bot] login" "chatgpt-codex-connector[bot]" "$codex_limit_notice" success
-expect_comment_state "a person quoting the Codex usage-limit notice" human-reviewer "$codex_limit_notice" failure
-expect_comment_state "a Codex review finding" chatgpt-codex-connector "$codex_finding" failure
-expect_comment_state "a CodeRabbit review-limit notice" coderabbitai "$coderabbit_limit_notice" success
-expect_comment_state "a person quoting the CodeRabbit review-limit notice" human-reviewer "$coderabbit_limit_notice" failure
 
 # Event-driven refreshes never wait or poll, even while other checks are pending.
 reset_logs

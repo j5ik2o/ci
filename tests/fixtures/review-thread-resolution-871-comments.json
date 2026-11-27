@@ -1,0 +1,72 @@
+[
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206240970",
+    "body": "<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{\"commit_sha\":\"3c1350c5b4621713de0e4a6c0f7f87db60273a19\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"failed\"},\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":null}} -->\n\n<details>\n<summary><strong>Codex Review Summary</strong>: ❌ Failed</summary>\n\nThis comment shows the latest Codex review activity on this pull request.\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ❌ **Failed** <relative-time datetime=\"2026-11-27T00:10:48.900450Z\">2026-11-27T00:10:48.900450Z</relative-time><br/>We couldn",
+    "createdAt": "2026-11-27T00:10:53Z",
+    "updatedAt": "2026-11-27T00:10:53Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "chatgpt-codex-connector"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206241589",
+    "body": "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).",
+    "createdAt": "2026-11-27T00:10:56Z",
+    "updatedAt": "2026-11-27T00:10:56Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "chatgpt-codex-connector"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206241946",
+    "body": "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n\n<a href=\"https://app.coderabbit.ai/change-stack/j5ik2o/event-store-adapter-java/pull/871?scope=ghh_OusAJGA4HG8ljoOV0wJvVx8NmnZIjc2DdjmxOu0xZWA&amp;cs_source=review_comment\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://storage.googleapis.com/coderabbit_public_assets/review-stack-buttons-v1/explain-change-dark.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://storage.googleapis.com/coderabbit_public_assets/review-stack-buttons-v1/explain-change.svg\"><img src=\"https://storage.googleapis.com/coderabbit_public_asse",
+    "createdAt": "2026-11-27T00:10:57Z",
+    "updatedAt": "2026-11-27T01:10:45Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "coderabbitai"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206535871",
+    "body": "Replies to the bot summaries, as the author of this PR:\n\n- **Codex review summary** (https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206240970): it marks the review as failed, and the next comment says why. Codex listed no findings on 3c1350c, so I have nothing to act on.\n- **Codex usage limit** (https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206241589): I noted it. Codex did not review this round. Devin and CodeRabbit did, and I handled their findings in 834cb5b.\n- **CodeRabbit summary** (https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206241946):\n  - I replied to all six inline comments. Five are fixed in 834cb5b. The Quint legacy-path one is tracked separately in https://github.com/j5ik2o/event-store-adapter-scala/issues/937, because it affects only the kotlin and scala instances of the shared model.\n  - For the failed \"Out of Scope Changes\" pre-merge check, the PR description now has a section (\"Changes beyond the list in #870, and why they are here\"). It says which #870 item, or which request, each of the four listed changes serves.\n",
+    "createdAt": "2026-11-27T00:31:42Z",
+    "updatedAt": "2026-11-27T00:31:42Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7207074375",
+    "body": "@coderabbitai review",
+    "createdAt": "2026-11-27T01:10:33Z",
+    "updatedAt": "2026-11-27T01:10:33Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7207075771",
+    "body": "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:69e40d05e2734a9a6d1b3eb3b942b966e2bb3b4b930185cc234c270d078842c2 -->\n<details>\n<summary>Action not completed</summary>\n<dl>\n<dd>\n<br>\n\nReview rate limited.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits. This command is applicable only when automatic reviews are paused.\n\n</dd>\n</dl>\n</details>",
+    "createdAt": "2026-11-27T01:10:39Z",
+    "updatedAt": "2026-11-27T01:11:47Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "coderabbitai"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7207511334",
+    "body": "CodeRabbit の「Review rate limited / Action not completed」を確認しました。834cb5b のレビューは枠が戻ってから頼み直します。",
+    "createdAt": "2026-11-27T01:42:24Z",
+    "updatedAt": "2026-11-27T01:42:24Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  }
+]

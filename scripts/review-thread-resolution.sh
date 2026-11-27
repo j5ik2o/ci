@@ -470,41 +470,142 @@ filter_unacknowledged_comments() {
       | (.body // "") as $body
       | body_matches_ignored_auto_report_pattern($body)
         or body_matches_ignored_auto_report_author_pattern($author; $body);
+    # --- Code fences -------------------------------------------------------
+    # One shared fence parser for the acknowledgement-word check, the TAKT
+    # marker check and the auto-report check. A fence opens on a line whose
+    # first non-space characters are a run of at least three backticks or
+    # tildes, and closes on a line that is only a run of the same character
+    # at least as long. A fence that never closes is not a fence at all, so
+    # its lines stay ordinary text.
+    def fence_open:
+      (sub("^\\s+"; "") ) as $t
+      | (($t | match("^(`{3,}|~{3,})")) // null) as $m
+      | if $m == null then null
+        else {char: $m.string[0:1], len: ($m.string | length)} end;
+    def fence_close($fence):
+      (sub("^\\s+"; "") | sub("\\s+$"; "")) as $t
+      | (($t | match("^(`+|~+)$")) // null) as $m
+      | $m != null and $m.string[0:1] == $fence.char and ($m.string | length) >= $fence.len;
+    def fence_flags:
+      ((. // "") | split("\n")) as $lines
+      | (reduce range(0; $lines | length) as $i
+          ({in_fence: null, start: null, flags: []};
+           ($lines[$i]) as $line
+           | if .in_fence == null then
+               ($line | fence_open) as $f
+               | if $f == null then .flags += [false]
+                 else .in_fence = $f | .start = $i | .flags += [true] end
+             else
+               .flags += [true]
+               | .in_fence as $f
+               | if ($line | fence_close($f))
+                 then .in_fence = null | .start = null else . end
+             end)) as $st
+      | if $st.in_fence != null then
+          [range(0; $st.flags | length) as $i
+           | if $i >= $st.start then false else $st.flags[$i] end]
+        else $st.flags end;
+    def strip_fences:
+      ((. // "") | split("\n")) as $lines
+      | (fence_flags) as $flags
+      | [range(0; $lines | length) as $i | select($flags[$i] | not) | $lines[$i]]
+      | join("\n");
+    # --- TAKT auto reports ---------------------------------------------------
+    def is_author:
+      (.author.login // "") == $pr_author;
+    def has_takt_marker:
+      ((.body // "") | strip_fences) | test("<!--\\s*takt:auto-report\\s*-->");
+    def fenced_report_body:
+      ((.body // "") | strip_fences) | test("^\\s*$");
+    def takt_report:
+      is_author and (has_takt_marker or fenced_report_body);
+    def is_auto_report:
+      ignored_auto_report or takt_report;
+    # --- Acknowledgement words ------------------------------------------------
+    def ack_words:
+      "確認しました|確認いたしました|確認済み|承知しました|了解しました|対応しました|対応いたしました|対応済み|対処しました|修正しました|直しました|\\backnowledged\\b|\\baddressed\\b|\\bfixed\\b";
+    def trusted_ack_words:
+      "acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました";
+    def negated($s; $m):
+      ($s[([0, ($m.offset - 12)] | max):$m.offset]
+       | test("(?i)(未|まだ|未だに?|\\bnot\\b|\\bnot\\s+yet\\b|\\bun-?)\\s*$"))
+      or ($s[($m.offset + ($m.string | length)):($m.offset + ($m.string | length) + 3)]
+          | test("^\\s*(か\\s*[?？。]|[?？]|か\\s*$)"));
+    def ack_phrase:
+      ((.body // "") | strip_fences | ascii_downcase) as $s
+      | ([ $s | match("(?i)(" + ack_words + ")"; "g") ]) as $hits
+      | ($hits | length) > 0
+        and ([$hits[] | select(negated($s; .) | not)] | length) > 0;
+    # Codex trusted acknowledgement: v1 narrow vocabulary, matched at the
+    # very start of the raw body (before any fence handling).
     def trusted_acknowledgement:
       (report_author_login == "chatgpt-codex-connector")
-      and ((.body // "") | test("(?i)^\\s*(acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました)"));
+      and ((.body // "") | test("(?i)^\\s*(" + trusted_ack_words + ")"));
+    # --- References to the acknowledged item ----------------------------------
+    def norm_text($body):
+      ($body // "")
+      | gsub("(?s)<!--.*?-->"; " ")
+      | split("\n")
+      | map(gsub("^\\s*>\\s?"; ""))
+      | map(gsub("<[^>]+>"; " "))
+      | map(gsub("[*_`#>|]+"; " "))
+      | map(gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; ""))
+      | map(select(length > 0))
+      | join("\n")
+      | ascii_downcase;
+    def windows($n):
+      . as $s | [range(0; (($s | length) - $n + 1)) as $i | $s[$i:$i + $n]];
+    def anchor_of($u):
+      ($u // "" | split("#") | if length > 1 then "#" + .[-1] else "" end);
+    # An ID match must be complete: the character after the match must not
+    # be another digit, so #issuecomment-10 never matches #issuecomment-101.
+    def id_match($raw; $needle):
+      $needle != ""
+      and any(($raw | indices($needle))[];
+              . as $i
+              | (($raw[$i + ($needle | length):$i + ($needle | length) + 1] // "")
+                 | test("^[0-9]$") | not));
+    def references($target; $ack):
+      norm_text($target.body) as $tb
+      | norm_text($ack.body) as $b
+      | (($ack.body // "") | ascii_downcase) as $raw
+      | ((($target.url // "") | ascii_downcase) as $u
+         | id_match($raw; $u)
+           or id_match($raw; (anchor_of($target.url) | ascii_downcase))
+           or ($b | any(windows(20)[]; . as $w | $tb | contains($w))));
+    def is_item:
+      (trusted_acknowledgement | not)
+      and ((.author.login // "") != $pr_author)
+      and (
+        $pr_author_type != "Bot"
+        or (
+          .authorAssociation != "OWNER"
+          and .authorAssociation != "MEMBER"
+          and .authorAssociation != "COLLABORATOR"
+        )
+      );
+    def is_acknowledger:
+      (.author.login // "") == $pr_author
+      or trusted_acknowledgement
+      or (
+        $pr_author_type == "Bot"
+        and (
+          .authorAssociation == "OWNER"
+          or .authorAssociation == "MEMBER"
+          or .authorAssociation == "COLLABORATOR"
+        )
+      );
     . as $comments
+    | ($comments | map(select(is_auto_report | not))) as $candidates
     | [
-        $comments[]
-        | select(
-            (ignored_auto_report | not)
-            and (trusted_acknowledgement | not)
-            and ((.author.login // "") != $pr_author)
-            and (
-              $pr_author_type != "Bot"
-              or (
-                .authorAssociation != "OWNER"
-                and .authorAssociation != "MEMBER"
-                and .authorAssociation != "COLLABORATOR"
-              )
-            )
-          )
+        $candidates[]
+        | select(is_item)
         | . as $comment
         | select([
-            $comments[]
-            | select(
-                (.author.login // "") == $pr_author
-                or trusted_acknowledgement
-                or (
-                  $pr_author_type == "Bot"
-                  and (
-                    .authorAssociation == "OWNER"
-                    or .authorAssociation == "MEMBER"
-                    or .authorAssociation == "COLLABORATOR"
-                  )
-                )
-              )
+            $candidates[]
+            | select(is_acknowledger)
             | select(.createdAt > ($comment.updatedAt // $comment.createdAt))
+            | select(ack_phrase and references($comment; .))
           ] | length == 0)
       ]
   ' <<< "$comments"
@@ -531,7 +632,9 @@ build_summary() {
     if [[ "$unacknowledged_count" -gt 0 ]]; then
       echo "### Unacknowledged top-level PR comments or review summaries"
       echo
-      jq -r '.[] | "- by \(.author.login // "unknown") updated at \((.updatedAt // .createdAt)): \(.url // "no comment URL")"' <<< "$unacknowledged"
+      jq -r '.[] | "- by \(.author.login // "unknown") updated at \((.updatedAt // .createdAt)): \(.url // "no comment URL")\n  確認するには、返信にこの URL を含めるか、本文を 20 文字以上引用し、\n  「確認しました」などの語を添えてください（URL は長さを問いません）。\n  引用はコードフェンスで囲んでもかまいません。"' <<< "$unacknowledged"
+      echo
+      echo "自動投稿（TAKT の失敗報告など）は確認として数えません。"
     fi
   }
 }

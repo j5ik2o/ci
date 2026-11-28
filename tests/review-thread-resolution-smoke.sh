@@ -341,9 +341,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # issue #134: the acceptance rule must require both an explicit acknowledgement
-# word and a reference to the acknowledged item. These cases are written
-# against the proposed rule (docs/design/issue-134.md in takt-dash), so they
-# are expected to fail on the current v1 script.
+# word and a value that points at the acknowledged item alone (its ID, or a
+# fragment of 20+ characters that no other item has, after URLs are removed).
+# These cases are written against the rule in docs/design/issue-134.md
+# (takt-dash), so the ones the script does not meet yet fail.
 # ---------------------------------------------------------------------------
 
 pr_url="https://github.com/j5ik2o/g2g/pull/27"
@@ -469,6 +470,13 @@ write_fixture "$tmpdir/comments-03.json" \
   "$(fixture_comment "$pr_url#issuecomment-203" "$pr_url#issuecomment-103 確認しました" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "3 URL acknowledgement of a short target" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-03.json"
+# 3b. The full URL of a review summary is a complete ID as well.
+write_fixture "$tmpdir/reviews-03b.json" \
+  "$(fixture_review "$pr_url#pullrequestreview-703" "Guard it." "2026-06-02T00:00:00Z" "" reviewer-bot)"
+write_fixture "$tmpdir/comments-03b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-203" "$pr_url#pullrequestreview-703 を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "3b review URL acknowledgement of a short target" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-03b.json" GH_REVIEWS_FILE="$tmpdir/reviews-03b.json"
 
 # 4. A target anchor (issue comment and review) with an acknowledgement word.
 write_fixture "$tmpdir/comments-04.json" \
@@ -495,6 +503,13 @@ write_fixture "$tmpdir/comments-05b.json" \
   "$(fixture_comment "$pr_url#issuecomment-206" $'確認しました\n```\nReview rate limited / Action not completed\n```' "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "5b fenced-quote acknowledgement" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-05b.json"
+# 5c. An item that carries a URL is still acknowledged by quoting its own
+# sentence outside the URL (URLs are removed before fragments are matched).
+write_fixture "$tmpdir/comments-05c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-140" "$item_body See https://github.com/j5ik2o/g2g/blob/abc123/src/retry.rs#L10" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-240" "「$item_quote」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "5c quote outside the item's URL acknowledges" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-05c.json"
 
 # 6. An acknowledgement word alone (no reference) does not pass.
 write_fixture "$tmpdir/comments-06.json" \
@@ -509,6 +524,18 @@ write_fixture "$tmpdir/comments-07.json" \
   "$(fixture_comment "$pr_url#issuecomment-207" "$pr_url#issuecomment-107" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "7 reference alone stays red" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-07.json"
+# 7b/7c. The acknowledgement word and the unique reference are a conjunction:
+# an anchor alone, or a unique quote alone, does not pass either.
+write_fixture "$tmpdir/comments-07b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-107" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-207" "#issuecomment-107 を見ます" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "7b anchor alone stays red" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-07b.json"
+write_fixture "$tmpdir/comments-07c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-107" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-207" "「$item_quote」は次の PR で見ます" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "7c unique quote alone stays red" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-07c.json"
 
 # 8. A URL of a different comment does not acknowledge the item.
 write_fixture "$tmpdir/comments-08.json" \
@@ -517,6 +544,42 @@ write_fixture "$tmpdir/comments-08.json" \
   "$(fixture_comment "$pr_url#issuecomment-209" "$pr_url#issuecomment-109 確認しました" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "8 another comment's URL does not acknowledge" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-08.json"
+# 8a. An ID is matched completely: #issuecomment-10 is not acknowledged by an
+# acknowledgement of #issuecomment-101 (anchor or full URL).
+write_fixture "$tmpdir/comments-08a.json" \
+  "$(fixture_comment "$pr_url#issuecomment-10" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-101" "$other_item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-208" "#issuecomment-101 確認しました" "2026-06-02T00:10:00Z" "" alice)" \
+  "$(fixture_comment "$pr_url#issuecomment-209" "$pr_url#issuecomment-101 確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8a anchor followed by a digit does not acknowledge" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08a.json"
+# 8b. j5ik2o/ci#44: only the common head of two URLs matches. The item links
+# a file in g2g, the acknowledgement names an unrelated PR. The item stays
+# unacknowledged. ci#43's 442d679 gives "got 0 / success" here.
+ci44_item="$item_body See https://github.com/j5ik2o/g2g/blob/abc123/src/retry.rs#L10"
+write_fixture "$tmpdir/comments-08b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-141" "$ci44_item" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-241" "別件の https://github.com/j5ik2o/ci/pull/43 を確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8b unrelated URL sharing the head does not acknowledge (ci#44)" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08b.json"
+# 8c. A host/path without a scheme is a URL too.
+write_fixture "$tmpdir/comments-08c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-142" "$item_body See https://github.com/j5ik2o/ci/blob/abc123/scripts/gate.sh#L10" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-242" "別件の github.com/j5ik2o/ci を確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8c scheme-less URL sharing the head does not acknowledge" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08c.json"
+# 8d. A path copied out of the item's URL is not a fragment of the item once
+# URLs are removed: the short form from the design, and a 20+ character one.
+write_fixture "$tmpdir/comments-08d.json" \
+  "$(fixture_comment "$pr_url#issuecomment-143" "$ci44_item" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-243" "src/retry.rs#L10 を確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8d path from the item's URL does not acknowledge" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08d.json"
+write_fixture "$tmpdir/comments-08e.json" \
+  "$(fixture_comment "$pr_url#issuecomment-144" "$ci44_item" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-244" "blob/abc123/src/retry.rs#L10 を確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8e long path from the item's URL does not acknowledge" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08e.json"
 
 # 9. An acknowledgement posted before the item does not count.
 write_fixture "$tmpdir/comments-09.json" \
@@ -551,6 +614,20 @@ write_fixture "$tmpdir/comments-11b.json" \
   "$(fixture_comment "$pr_url#issuecomment-213" "This is unacknowledged." "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "11b unacknowledged is not a match" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-11b.json"
+# 11c. A fence that never closes runs to the end of the body, so the word
+# after its opening line is inside it (the quote before it is prose).
+write_fixture "$tmpdir/comments-11c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-145" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-245" "$item_body"$'\n```\n確認しました' "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "11c word inside an unclosed fence stays red" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-11c.json"
+# 11d. A fence opened with four backticks does not close on a three-backtick
+# line, so the word between the inner fences is still inside it.
+write_fixture "$tmpdir/comments-11d.json" \
+  "$(fixture_comment "$pr_url#issuecomment-146" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-246" "$item_body"$'\n````\n```\n確認しました\n```\n````' "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "11d word inside a four-backtick fence stays red" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-11d.json"
 
 # 12. Acknowledgement words inside a tilde fence are not counted.
 write_fixture "$tmpdir/comments-12.json" \
@@ -579,6 +656,16 @@ write_fixture "$tmpdir/comments-14.json" \
   "$(fixture_comment "$pr_url#issuecomment-219" "確認しましたか？ $pr_url#issuecomment-119" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "14 negated or interrogative acknowledgement stays red" 4 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-14.json"
+# 14b. The other negations: まだ, not yet, un-.
+write_fixture "$tmpdir/comments-14b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-147" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-247" "まだ対応済み $pr_url#issuecomment-147" "2026-06-02T00:10:00Z" "" alice)" \
+  "$(fixture_comment "$pr_url#issuecomment-148" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-248" "not yet addressed $pr_url#issuecomment-148" "2026-06-02T00:10:00Z" "" alice)" \
+  "$(fixture_comment "$pr_url#issuecomment-149" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-249" "un-fixed $pr_url#issuecomment-149" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "14b まだ / not yet / un- stay red" 3 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-14b.json"
 
 # 15. The words v1 accepted remain valid with a reference.
 write_fixture "$tmpdir/comments-15.json" \
@@ -621,6 +708,13 @@ write_fixture "$tmpdir/comments-16d.json" \
   "$(fixture_comment "$pr_url#issuecomment-227" $'確認しました\n```\n<!-- takt:auto-report -->\n'"$item_body"$'\n```' "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "16d marker quoted in a fence acknowledges" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-16d.json"
+# 16e. The same quote in a four-backtick fence that holds a three-backtick
+# fence: the marker stays inside the outer fence.
+write_fixture "$tmpdir/comments-16e.json" \
+  "$(fixture_comment "$pr_url#issuecomment-150" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-250" $'確認しました\n````\n<!-- takt:auto-report -->\n```\n'"$item_body"$'\n```\n````' "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "16e marker quoted in a four-backtick fence acknowledges" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-16e.json"
 
 # 17. Third-party acknowledgements do not count. For a Bot-authored PR, an
 # OWNER / MEMBER / COLLABORATOR comment does. The coderabbitai comment below is
@@ -653,6 +747,38 @@ write_fixture "$tmpdir/comments-18b.json" \
   "$(fixture_comment "$pr_url#issuecomment-304" "Codex の「$limit_body」を確認しました。次回のレビューを待ちます。" "2026-11-16T02:49:20Z" "" alice)"
 assert_conclusion "18b #131 quote acknowledgement passes" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-18b.json"
+
+# 18c-18d. j5ik2o/ci#45: #131 as it really was. The fixture keeps the live
+# bodies of the limit notice, the failure report (02:46:31, the whole body is
+# one ```text fence holding the quote, 未acknowledge and a run URL) and the
+# author's acknowledgement (02:49:20); long bot summaries are cut after the
+# markers that make them ignored. It runs with #131's settings, where the
+# limit notice is not an ignored report, so it is the only item.
+run_131_until() {
+  local cutoff="$1"
+  local label="$2"
+  local want_items="$3"
+  local want_state="$4"
+
+  jq --arg cutoff "$cutoff" '[.[] | select(.createdAt <= $cutoff)]' \
+    "$root/tests/fixtures/review-thread-resolution-131-comments.json" > "$tmpdir/comments-131.json"
+  assert_conclusion "$label" "$want_items" "$want_state" \
+    TEST_REPOSITORY="j5ik2o/takt-dash" \
+    TEST_PR_NUMBER="131" \
+    GH_PR_AUTHOR="j5ik2o" \
+    GH_PR_AUTHOR_TYPE="User" \
+    GH_PR_REPO="j5ik2o/takt-dash" \
+    GH_PR_URL="https://github.com/j5ik2o/takt-dash/pull/131" \
+    GH_COMMENTS_FILE="$tmpdir/comments-131.json" \
+    GH_REVIEWS_FILE="$root/tests/fixtures/review-thread-resolution-131-reviews.json"
+}
+if ! jq -e '.[] | select(.url | endswith("#issuecomment-6905873562")) | .body | startswith("```text\n") and endswith("\n```")' \
+  "$root/tests/fixtures/review-thread-resolution-131-comments.json" >/dev/null; then
+  smoke_failures=$((smoke_failures + 1))
+  printf 'not ok - 18 #131 fixture keeps the whole-fence ```text failure report\n' >&2
+fi
+run_131_until "2026-11-16T02:48:59Z" "18c #131 real timeline until 02:48 (whole-fence report) stays red" 1 failure
+run_131_until "2026-11-16T02:49:20Z" "18d #131 real acknowledgement at 02:49:20 passes" 0 success
 
 # 19. event-store-adapter-java#871 is green today and must stay green. The
 # fixture keeps the decisive bodies and timestamps from the live PR; the long
@@ -694,6 +820,12 @@ write_fixture "$tmpdir/comments-21b.json" \
   "$(fixture_comment "$pr_url#issuecomment-232" "Acknowledged." "2026-06-02T00:10:00Z" "" chatgpt-codex-connector)"
 assert_conclusion "21b Codex Acknowledged does not approve other items" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-21b.json"
+# 21c. A Codex summary that opens with a fence (a log) and has Acknowledged
+# after it does not start with the word, so it stays an item.
+write_fixture "$tmpdir/comments-21c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-151" $'```\nlog\n```\nAcknowledged. But the retry path is still broken.' "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
+assert_conclusion "21c Codex summary with Acknowledged after a leading fence stays an item" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-21c.json"
 
 # 22. A Codex summary that starts with Fixed / 確認済み stays an item (the
 # trusted words stay the narrow v1 list). Those words only acknowledge when
@@ -716,6 +848,62 @@ write_fixture "$tmpdir/comments-22d.json" \
   "$(fixture_comment "$pr_url#issuecomment-236" "確認済みです。$item_quote" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "22d author 確認済み acknowledges" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-22d.json"
+
+# 23. takt-dash#443: a fragment that another item also has does not point at
+# one item, so a quote of it acknowledges neither. The two summaries share a
+# Codex-style heading; they are posted by reviewer-bot because the default
+# ignore list drops chatgpt-codex-connector bodies that contain "Codex Review".
+codex_heading="Codex Review: Here are some automated review suggestions"
+write_fixture "$tmpdir/comments-23a.json" \
+  "$(fixture_comment "$pr_url#issuecomment-152" "$codex_heading for this pull request."$'\n\n'"$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-153" "$codex_heading for this pull request."$'\n\n'"$other_item_body" "2026-06-02T00:01:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-253" "「$codex_heading」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "23a shared heading quote acknowledges neither item (#443)" 2 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-23a.json"
+# 23b. The same limit notice twice: quoting it acknowledges neither.
+write_fixture "$tmpdir/comments-23b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-255" "Codex の「$limit_body」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "23b duplicated limit notice quote acknowledges neither (#443)" 2 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-23b.json"
+# 23c. Pasting each notice's URL acknowledges both.
+write_fixture "$tmpdir/comments-23c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-256" "$pr_url#issuecomment-154 と $pr_url#issuecomment-155 を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "23c duplicated notices acknowledged by their URLs" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-23c.json"
+# 23d. With a single notice, the same quote acknowledges it.
+write_fixture "$tmpdir/comments-23d.json" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-255" "Codex の「$limit_body」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "23d single limit notice quote acknowledges" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-23d.json"
+# 23e. A fragment shared with an item that is already acknowledged still does
+# not count (the other items are all items, acknowledged or not).
+write_fixture "$tmpdir/comments-23e.json" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-256" "#issuecomment-154 を確認しました。" "2026-06-02T00:10:00Z" "" alice)" \
+  "$(fixture_comment "$pr_url#issuecomment-257" "Codex の「$limit_body」を確認しました。" "2026-06-02T00:11:00Z" "" alice)"
+assert_conclusion "23e quote shared with an acknowledged item still does not count" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-23e.json"
+
+# 24. One acknowledgement can approve several items when it lists one unique
+# value per item: anchors, or a fragment only that item has.
+write_fixture "$tmpdir/comments-24a.json" \
+  "$(fixture_comment "$pr_url#issuecomment-10" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-11" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-258" $'次の 2 件を確認しました。\n- #issuecomment-10\n- #issuecomment-11' "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "24a one acknowledgement listing two anchors" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-24a.json"
+write_fixture "$tmpdir/comments-24b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-156" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-157" "$other_item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-259" $'次の 2 件を確認しました。\n- '"$item_quote"$'\n- The queue drains twice on shutdown' "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "24b one acknowledgement listing two unique fragments" 0 success \
+  GH_COMMENTS_FILE="$tmpdir/comments-24b.json"
 
 if [[ "$smoke_failures" -gt 0 ]]; then
   echo "$smoke_failures issue #134 smoke expectation(s) failed." >&2

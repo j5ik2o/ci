@@ -545,12 +545,15 @@ write_fixture "$tmpdir/comments-08.json" \
 assert_conclusion "8 another comment's URL does not acknowledge" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-08.json"
 # 8a. An ID is matched completely: #issuecomment-10 is not acknowledged by an
-# acknowledgement of #issuecomment-101 (anchor or full URL).
+# acknowledgement of #issuecomment-101 (anchor or full URL), also when Japanese
+# text comes before the anchor (byte and character offsets differ there).
 write_fixture "$tmpdir/comments-08a.json" \
   "$(fixture_comment "$pr_url#issuecomment-10" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
   "$(fixture_comment "$pr_url#issuecomment-101" "$other_item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
   "$(fixture_comment "$pr_url#issuecomment-208" "#issuecomment-101 確認しました" "2026-06-02T00:10:00Z" "" alice)" \
-  "$(fixture_comment "$pr_url#issuecomment-209" "$pr_url#issuecomment-101 確認しました" "2026-06-02T00:10:00Z" "" alice)"
+  "$(fixture_comment "$pr_url#issuecomment-209" "$pr_url#issuecomment-101 確認しました" "2026-06-02T00:10:00Z" "" alice)" \
+  "$(fixture_comment "$pr_url#issuecomment-210" "確認しました #issuecomment-101" "2026-06-02T00:10:00Z" "" alice)" \
+  "$(fixture_comment "$pr_url#issuecomment-211" "確認しました $pr_url#issuecomment-101" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "8a anchor followed by a digit does not acknowledge" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-08a.json"
 # 8b. j5ik2o/ci#44: only the common head of two URLs matches. The item links
@@ -603,15 +606,16 @@ assert_conclusion "10b acknowledgement after the edit passes" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-10b.json"
 
 # 11. Acknowledgement words inside a backtick fence are not counted, and a
-# substring such as "unacknowledged" is not a match either.
+# substring such as "unacknowledged" is not a match either. Each reply carries
+# the item's URL, so only the word decides the case.
 write_fixture "$tmpdir/comments-11.json" \
   "$(fixture_comment "$pr_url#issuecomment-112" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
-  "$(fixture_comment "$pr_url#issuecomment-212" $'メモ\n```\n確認しました\n```' "2026-06-02T00:10:00Z" "" alice)"
+  "$(fixture_comment "$pr_url#issuecomment-212" "メモ $pr_url#issuecomment-112"$'\n```\n確認しました\n```' "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "11a backtick-fenced acknowledgement stays red" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-11.json"
 write_fixture "$tmpdir/comments-11b.json" \
   "$(fixture_comment "$pr_url#issuecomment-113" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
-  "$(fixture_comment "$pr_url#issuecomment-213" "This is unacknowledged." "2026-06-02T00:10:00Z" "" alice)"
+  "$(fixture_comment "$pr_url#issuecomment-213" "This is unacknowledged. $pr_url#issuecomment-113" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "11b unacknowledged is not a match" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-11b.json"
 # 11c. A fence that never closes runs to the end of the body, so the word
@@ -629,10 +633,11 @@ write_fixture "$tmpdir/comments-11d.json" \
 assert_conclusion "11d word inside a four-backtick fence stays red" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-11d.json"
 
-# 12. Acknowledgement words inside a tilde fence are not counted.
+# 12. Acknowledgement words inside a tilde fence are not counted (the reply
+# carries the item's URL).
 write_fixture "$tmpdir/comments-12.json" \
   "$(fixture_comment "$pr_url#issuecomment-114" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
-  "$(fixture_comment "$pr_url#issuecomment-214" $'メモ\n~~~\n確認しました\n~~~' "2026-06-02T00:10:00Z" "" alice)"
+  "$(fixture_comment "$pr_url#issuecomment-214" "メモ $pr_url#issuecomment-114"$'\n~~~\n確認しました\n~~~' "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "12 tilde-fenced acknowledgement stays red" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-12.json"
 

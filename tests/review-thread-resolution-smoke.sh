@@ -785,18 +785,71 @@ fi
 run_131_until "2026-11-16T02:48:59Z" "18c #131 real timeline until 02:48 (whole-fence report) stays red" 1 failure
 run_131_until "2026-11-16T02:49:20Z" "18d #131 real acknowledgement at 02:49:20 passes" 0 success
 
-# 19. event-store-adapter-java#871 is green today and must stay green. The
-# fixture keeps the decisive bodies and timestamps from the live PR; the long
-# bot summaries are truncated after the markers that make them ignored.
-assert_conclusion "19 event-store-adapter-java#871 stays green" 0 success \
-  TEST_REPOSITORY="j5ik2o/event-store-adapter-java" \
-  TEST_PR_NUMBER="871" \
-  GH_PR_AUTHOR="j5ik2o" \
-  GH_PR_AUTHOR_TYPE="User" \
-  GH_PR_REPO="j5ik2o/event-store-adapter-java" \
-  GH_PR_URL="https://github.com/j5ik2o/event-store-adapter-java/pull/871" \
-  GH_COMMENTS_FILE="$root/tests/fixtures/review-thread-resolution-871-comments.json" \
-  GH_REVIEWS_FILE="$root/tests/fixtures/review-thread-resolution-871-reviews.json"
+# 19. event-store-adapter-java#871 and modern-ddd-book#695 as they really are.
+# The fixtures keep the decisive bodies and timestamps from the live PRs; the
+# long bot summaries are truncated after the markers that make them ignored.
+# Both turn red under the design's second fix (d7e6d5b, "誤って赤にする側"): the
+# only unit that points at the Codex usage-limit notice has no acknowledgement
+# word (`I noted it.` in #871, `対象: <URL>` + `指摘はありません` in #695), and a
+# word in another list item or another heading's section does not reach it.
+# `noted` is not an acknowledgement word (the marshal's decision). Adding
+# 確認しました to a unit that carries the notice's URL turns each green again.
+run_871() {
+  local label="$1"
+  local want_items="$2"
+  local want_state="$3"
+  local comments="${4:-$root/tests/fixtures/review-thread-resolution-871-comments.json}"
+
+  assert_conclusion "$label" "$want_items" "$want_state" \
+    TEST_REPOSITORY="j5ik2o/event-store-adapter-java" \
+    TEST_PR_NUMBER="871" \
+    GH_PR_AUTHOR="j5ik2o" \
+    GH_PR_AUTHOR_TYPE="User" \
+    GH_PR_REPO="j5ik2o/event-store-adapter-java" \
+    GH_PR_URL="https://github.com/j5ik2o/event-store-adapter-java/pull/871" \
+    GH_COMMENTS_FILE="$comments" \
+    GH_REVIEWS_FILE="$root/tests/fixtures/review-thread-resolution-871-reviews.json"
+}
+run_695() {
+  local label="$1"
+  local want_items="$2"
+  local want_state="$3"
+  local comments="${4:-$root/tests/fixtures/review-thread-resolution-695-comments.json}"
+
+  assert_conclusion "$label" "$want_items" "$want_state" \
+    TEST_REPOSITORY="j5ik2o/modern-ddd-book" \
+    TEST_PR_NUMBER="695" \
+    GH_PR_AUTHOR="j5ik2o" \
+    GH_PR_AUTHOR_TYPE="User" \
+    GH_PR_REPO="j5ik2o/modern-ddd-book" \
+    GH_PR_URL="https://github.com/j5ik2o/modern-ddd-book/pull/695" \
+    GH_COMMENTS_FILE="$comments" \
+    GH_REVIEWS_FILE="$root/tests/fixtures/review-thread-resolution-695-reviews.json"
+}
+with_author_reply() {
+  local fixture="$1"
+  local url="$2"
+  local body="$3"
+  local created="$4"
+
+  jq --arg url "$url" --arg body "$body" --arg created "$created" \
+    '. + [{url: $url, body: $body, createdAt: $created, updatedAt: $created,
+           authorAssociation: "OWNER", author: {login: "j5ik2o"}}]' "$fixture"
+}
+run_871 "19a event-store-adapter-java#871: I noted it. does not acknowledge the usage-limit notice" 1 failure
+with_author_reply "$root/tests/fixtures/review-thread-resolution-871-comments.json" \
+  "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7300000001" \
+  "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206241589 を確認しました。" \
+  "2026-11-28T00:00:00Z" > "$tmpdir/comments-871-acked.json"
+run_871 "19b event-store-adapter-java#871 turns green once the notice's unit says 確認しました" 0 success \
+  "$tmpdir/comments-871-acked.json"
+run_695 "19c modern-ddd-book#695: a heading section without a word does not acknowledge the notice" 1 failure
+with_author_reply "$root/tests/fixtures/review-thread-resolution-695-comments.json" \
+  "https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7300000002" \
+  "Codex の利用上限の知らせ https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7183838627 を確認しました。" \
+  "2026-11-28T00:00:00Z" > "$tmpdir/comments-695-acked.json"
+run_695 "19d modern-ddd-book#695 turns green once the notice's unit says 確認しました" 0 success \
+  "$tmpdir/comments-695-acked.json"
 
 # 20. ci_ref keeps v1 as the default and only the explicit v2 selects v2.
 ci_ref_default="$(awk '
@@ -909,6 +962,206 @@ write_fixture "$tmpdir/comments-24b.json" \
   "$(fixture_comment "$pr_url#issuecomment-259" $'次の 2 件を確認しました。\n- '"$item_quote"$'\n- The queue drains twice on shutdown' "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "24b one acknowledgement listing two unique fragments" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-24b.json"
+
+# ---------------------------------------------------------------------------
+# 25-29. The second fix of the design (d7e6d5b, "確認の語の効く範囲と打ち消し"):
+# an acknowledgement word counts only when the author wrote it in their own
+# words, unnegated, and in the same unit (paragraph, list item, or clause when
+# a unit mixes affirmed and negated clauses) as the reference. A clause that
+# negates or says "not yet" vetoes every item it touches. Input the rule finds
+# ambiguous is not an acknowledgement (the design's opening rule: 迷う入力は
+# 承認しない側に倒す).
+#
+# The cases are the rows of the design's table (1a-7n) plus a few more. Each
+# PR has the three items of the table: #issuecomment-10 (`Once this is fixed,
+# please rerun the integration tests.`), #issuecomment-11 (`Action not
+# completed / Review rate limited`) and #issuecomment-108 (`You have reached
+# your Codex usage limits for code reviews.`). One author reply follows, and
+# the case checks which items it approves (not only how many).
+# ---------------------------------------------------------------------------
+
+scope_item_10="Once this is fixed, please rerun the integration tests."
+scope_item_11="Action not completed / Review rate limited"
+
+# assert_acked LABEL "APPROVED ANCHOR NUMBERS" ACK_BODY
+assert_acked() {
+  local label="$1"
+  local approved="$2"
+  local body="$3"
+  local file="$tmpdir/comments-scope.json"
+
+  write_fixture "$file" \
+    "$(fixture_comment "$pr_url#issuecomment-10" "$scope_item_10" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+    "$(fixture_comment "$pr_url#issuecomment-11" "$scope_item_11" "2026-06-02T00:01:00Z" "" reviewer-bot)" \
+    "$(fixture_comment "$pr_url#issuecomment-108" "$limit_body" "2026-06-02T00:02:00Z" "" chatgpt-codex-connector)" \
+    "$(fixture_comment "$pr_url#issuecomment-900" "$body" "2026-06-02T00:10:00Z" "" alice)"
+
+  local want_left=() id
+  for id in 10 11 108; do
+    [[ " $approved " == *" $id "* ]] || want_left+=("$id")
+  done
+  local want got status=0
+  want="$(printf '%s\n' "${want_left[@]}" | sort -n | paste -sd' ' -)"
+  reset_logs
+  ( export GH_COMMENTS_FILE="$file"; run_script issue_comment true ) > "$tmpdir/out.log" 2>&1 || status=$?
+  got="$(sed -n 's/^- by .*#issuecomment-\([0-9][0-9]*\)$/\1/p' "$tmpdir/summary.md" 2>/dev/null | sort -n | paste -sd' ' - || true)"
+
+  if [[ "$status" -ne 0 || "$got" != "$want" ]]; then
+    smoke_failures=$((smoke_failures + 1))
+    printf 'not ok - %s (want approved [%s], left [%s]; got left [%s]; exit %s)\n' \
+      "$label" "$approved" "$want" "$got" "$status" >&2
+    sed 's/^/    /' "$tmpdir/out.log" >&2 2>/dev/null || true
+  else
+    printf 'ok - %s\n' "$label"
+  fi
+}
+
+# 25. The scope of an acknowledgement word (hole 1: a summary reply's word
+# reached other items). The word and the reference must share a unit.
+assert_acked "25 (1a) list items: 10 未対応, 11 対応しました approves 11 only" "11" \
+  $'- #issuecomment-10 は未対応です\n- #issuecomment-11 は対応しました'
+assert_acked "25 (1b) two sentences in a paragraph approve the affirmed one only" "10" \
+  $'#issuecomment-10 は確認しました。#issuecomment-11 は未対応です。'
+assert_acked "25 (1c) 確認しましたが、… 未対応 approves 10 only" "10" \
+  $'#issuecomment-10 は確認しましたが、#issuecomment-11 は未対応です。'
+assert_acked "25 (1d) a lead paragraph reaches the list items under it" "10 11" \
+  $'次の 2 件を確認しました。\n- #issuecomment-10\n- #issuecomment-11'
+assert_acked "25 (1e) the lead does not reach an item that says まだ" "10" \
+  $'次の 2 件を確認しました。\n- #issuecomment-10\n- #issuecomment-11 はまだです'
+assert_acked "25 (1f) a later ただし … まだ clause vetoes 11" "10" \
+  $'#issuecomment-10 と #issuecomment-11 を確認しました。ただし #issuecomment-11 はまだ直していません。'
+assert_acked "25 (1g) a quote attached under the acknowledgement" "11" \
+  $'確認しました\n> Action not completed / Review rate limited'
+assert_acked "25 (1h) a quote before the acknowledgement paragraph (Quote reply)" "11" \
+  $'> Action not completed / Review rate limited\n\n確認しました。'
+assert_acked "25 (1i) a fence attached under the acknowledgement" "11" \
+  $'確認しました\n```\nAction not completed\n```'
+assert_acked "25 (1j) word and reference in different sentences of one paragraph" "10" \
+  $'Fixed. See #issuecomment-10.'
+assert_acked "25 (5c) a まだ clause that copies 11's text vetoes it" "10" \
+  $'Action not completed / Review rate limited はまだです。#issuecomment-10 は確認しました。'
+assert_acked "25 (5d) まだ直していません on 11's copied text vetoes 11" "10" \
+  $'#issuecomment-10 と #issuecomment-11 を確認しました。Action not completed / Review rate limited の件はまだ直していません。'
+assert_acked "25 (5e) a blank line between the lead and the list" "10 11" \
+  $'次の 2 件を確認しました。\n\n- #issuecomment-10\n- #issuecomment-11'
+assert_acked "25 (5f) ambiguous: a closing 以上を確認しました does not reach the list" "" \
+  $'- #issuecomment-10\n- #issuecomment-11\n\n以上を確認しました。'
+assert_acked "25 (5g) modern-ddd-book#695 shape: a word in heading A does not reach heading B" "10" \
+  $'## A\n対象: #issuecomment-10\n指摘と対応: 直しました。\n\n## B\n対象: #issuecomment-11\n指摘と対応: 指摘はありません。'
+assert_acked "25 (5h) event-store-adapter-java#871 shape: I noted it. is not a word, fixed in another item does not reach it" "" \
+  $'- **Codex usage limit** (#issuecomment-108): I noted it. Codex did not review this round.\n- Five are fixed in 834cb5b.'
+assert_acked "25 (7a) is fixed but … is not fixed approves 10 only" "10" \
+  $'#issuecomment-10 is fixed but #issuecomment-11 is not fixed.'
+assert_acked "25 (7b) ambiguous: is fixed and … is not fixed approves neither" "" \
+  $'#issuecomment-10 is fixed and #issuecomment-11 is not fixed.'
+assert_acked "25 (7c) 確認しましたが without a comma approves 10 only" "10" \
+  $'#issuecomment-10 は確認しましたが #issuecomment-11 は未対応です'
+assert_acked "25 (7d) ていないことを確認しました is not a まだ statement" "10" \
+  $'#issuecomment-10 でエラーが出ていないことを確認しました。'
+assert_acked "25 (7e) a quote does not attach across a heading" "" \
+  $'確認しました。\n\n## B\n> #issuecomment-10'
+assert_acked "25 (7f) a quote under 未対応 does not borrow the 対応済み section" "10" \
+  $'## 未対応\n> Action not completed / Review rate limited\n\n## 対応済み\n#issuecomment-10 を確認しました。'
+assert_acked "25 (7g) a quote attached to a まだ sentence vetoes its item" "10" \
+  $'この件はまだです。\n> Action not completed / Review rate limited\n\n#issuecomment-10 と #issuecomment-11 を確認しました。'
+assert_acked "25 (7n) an indented line after a blank line continues the list item" "10" \
+  $'- #issuecomment-10\n\n  確認しました。'
+
+# 26. Words inside quotes do not count (hole 2): `>` lines, 「」, inline code
+# and text copied from an item are references only.
+assert_acked "26 (2a) a quoted fixed plus a question does not acknowledge (Devin)" "" \
+  $'> Once this is fixed, please rerun the integration tests.\n\nWhich tests should I run?'
+assert_acked "26 (2b) the same quote plus 確認しました acknowledges" "10" \
+  $'> Once this is fixed, please rerun the integration tests.\n\n確認しました。'
+assert_acked "26 (2c) a fixed inside 「」 plus a question does not acknowledge" "" \
+  $'「Once this is fixed, please rerun the integration tests.」とありますが、どのテストですか'
+assert_acked "26 (5a) not inside 11's copied text is not the author's negation" "11" \
+  $'Action not completed / Review rate limited\n確認しました。'
+assert_acked "26 (5b) fixed inside 10's copied text is not counted, を確認しました is" "10" \
+  $'Once this is fixed, please rerun the integration tests. を確認しました'
+assert_acked "26 (6g) > quote then 確認しました on the next line (no lazy continuation)" "11" \
+  $'> Action not completed / Review rate limited\n確認しました'
+assert_acked "26 (7h) fixed inside a double-backtick code span is not counted" "" \
+  $'``fixed`` #issuecomment-10'
+assert_acked "26 (7i) fixed inside an inline code span is not counted" "" \
+  $'`fixed` #issuecomment-10'
+assert_acked "26 (7j) a bare fixed with the anchor acknowledges" "10" \
+  $'fixed #issuecomment-10'
+assert_acked "26 (7k) an unclosed backtick is a plain character" "10" \
+  $'`foo を確認しました #issuecomment-10'
+assert_acked "26 a > quote of fixed with only the item's anchor does not acknowledge" "" \
+  $'> Once this is fixed, please rerun the integration tests.\n\n#issuecomment-10'
+
+# 27. English negation, condition and future earlier in the same clause
+# (hole 3). Japanese words are not affected.
+assert_acked "27 (3a) This has not been fixed. (Devin)" "" \
+  $'This has not been fixed. #issuecomment-10'
+assert_acked "27 (3b) hasn't been fixed yet" "" \
+  $'This hasn\'t been fixed yet: #issuecomment-10'
+assert_acked "27 (3c) will be fixed in a follow-up" "" \
+  $'#issuecomment-10 will be fixed in a follow-up.'
+assert_acked "27 (3d) Is … fixed?" "" \
+  $'Is #issuecomment-10 fixed?'
+assert_acked "27 (3e) Fixed … in abc123 acknowledges (pair of 3a)" "10" \
+  $'Fixed #issuecomment-10 in abc123.'
+assert_acked "27 (3f) an English not does not negate a Japanese word" "11" \
+  $'Action not completed を確認しました #issuecomment-11'
+assert_acked "27 (6a) Not a bug, but fixed acknowledges" "10" \
+  $'Not a bug, but fixed: #issuecomment-10'
+assert_acked "27 (6b) No regressions; fixed acknowledges" "10" \
+  $'No regressions; fixed #issuecomment-10'
+assert_acked "27 (6c) should be fixed now acknowledges" "10" \
+  $'#issuecomment-10 should be fixed now.'
+assert_acked "27 (6d) was not actually addressed" "" \
+  $'#issuecomment-10 was not actually addressed.'
+assert_acked "27 (6e) isn't fixed" "" \
+  $'#issuecomment-10 isn\'t fixed'
+assert_acked "27 (6f) ambiguous: doesn't affect X and is fixed stays red" "" \
+  $'#issuecomment-10 doesn\'t affect X and is fixed'
+assert_acked "27 if fixed (a condition)" "" \
+  $'#issuecomment-10 can be closed if fixed'
+assert_acked "27 once this is fixed (a condition, in the author's own words)" "" \
+  $'#issuecomment-10: once this is fixed I will rerun the tests'
+assert_acked "27 will … fixed (future)" "" \
+  $'I will get #issuecomment-10 fixed tomorrow'
+assert_acked "27 I'll have … fixed (future)" "" \
+  $'I\'ll have #issuecomment-10 fixed tomorrow'
+assert_acked "27 has never been addressed" "" \
+  $'#issuecomment-10 has never been addressed'
+
+# 28. Japanese negation and question right after the word (hole 4); emphasis
+# marks between the word and the negation are skipped.
+assert_acked "28 (4a) 確認済みではありません (CodeRabbit)" "" \
+  $'確認済みではありません #issuecomment-108'
+assert_acked "28 (4b) 確認済みです acknowledges (pair of 4a)" "108" \
+  $'確認済みです #issuecomment-108'
+assert_acked "28 (4c) 対応済みでない" "" \
+  $'#issuecomment-108 は対応済みでない'
+assert_acked "28 (4d) 確認済みですか？" "" \
+  $'#issuecomment-108 は確認済みですか？'
+assert_acked "28 (4e) 問題がないことを確認しました acknowledges" "108" \
+  $'#issuecomment-108 に問題がないことを確認しました。'
+assert_acked "28 (4f) 確認しましたから acknowledges" "108" \
+  $'#issuecomment-108 は確認しましたから大丈夫です。'
+assert_acked "28 (6h) 確認済みかどうか分かりません" "" \
+  $'#issuecomment-108 が確認済みかどうか分かりません'
+assert_acked "28 (7l) **確認済み**ではありません (emphasis skipped)" "" \
+  $'**確認済み**ではありません #issuecomment-108'
+assert_acked "28 (7m) **確認済み**です acknowledges (pair of 7l)" "108" \
+  $'**確認済み**です #issuecomment-108'
+assert_acked "28 確認済み？ (a bare question mark)" "" \
+  $'#issuecomment-108 は確認済み？'
+assert_acked "28 確認しましたか？" "" \
+  $'#issuecomment-108 を確認しましたか？'
+assert_acked "28 対応済みではなく、次の PR で直します" "" \
+  $'#issuecomment-108 は対応済みではなく、次の PR で直します'
+
+# 29. The same reference with an affirmed and a negated reply (CodeRabbit's
+# recommendation): only the affirmed one approves.
+assert_acked "29 pair: 確認済みです approves 108" "108" $'#issuecomment-108 は確認済みです。'
+assert_acked "29 pair: 確認済みではありません does not" "" $'#issuecomment-108 は確認済みではありません。'
+assert_acked "29 pair: has been fixed approves 10" "10" $'#issuecomment-10 has been fixed.'
+assert_acked "29 pair: has not been fixed does not" "" $'#issuecomment-10 has not been fixed.'
 
 if [[ "$smoke_failures" -gt 0 ]]; then
   echo "$smoke_failures issue #134 smoke expectation(s) failed." >&2

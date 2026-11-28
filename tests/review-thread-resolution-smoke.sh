@@ -590,8 +590,26 @@ assert_conclusion "8d path from the item's URL does not acknowledge" 1 failure \
 write_fixture "$tmpdir/comments-08e.json" \
   "$(fixture_comment "$pr_url#issuecomment-144" "$ci44_item" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
   "$(fixture_comment "$pr_url#issuecomment-244" "blob/abc123/src/retry.rs#L10 を確認しました" "2026-06-02T00:10:00Z" "" alice)"
-assert_conclusion "8e long path from the item's URL does not acknowledge" 1 failure \
+assert_conclusion "8d' long path from the item's URL does not acknowledge" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-08e.json"
+# 8e. The fourth fix of the design (a59ca97) keeps the fragment match's URL
+# range wide (up to whitespace, ")", ">" or "]"): a URL with non-ASCII
+# characters in its path, or an IDN host, pasted as an unrelated reference,
+# does not acknowledge the item that links the same URL. With the narrow range
+# the masked text uses, the ASCII after the non-ASCII part stays and matches
+# as a 20-character window (a false green).
+nonascii_url="https://github.com/o/r/blob/main/docs/設計/review-thread-resolution-notes.md"
+idn_url="https://日本語のドメイン.example.com/docs/review-thread-resolution-notes"
+write_fixture "$tmpdir/comments-08e2.json" \
+  "$(fixture_comment "$pr_url#issuecomment-145" "$item_body See $nonascii_url" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-245" "別件の $nonascii_url を確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8e a URL with a non-ASCII path pasted as another matter does not acknowledge" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08e2.json"
+write_fixture "$tmpdir/comments-08e3.json" \
+  "$(fixture_comment "$pr_url#issuecomment-146" "$item_body See $idn_url" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-246" "別件の $idn_url を確認しました" "2026-06-02T00:10:00Z" "" alice)"
+assert_conclusion "8e a URL with an IDN host pasted as another matter does not acknowledge" 1 failure \
+  GH_COMMENTS_FILE="$tmpdir/comments-08e3.json"
 
 # 9. An acknowledgement posted before the item does not count.
 write_fixture "$tmpdir/comments-09.json" \
@@ -1425,6 +1443,99 @@ assert_host_case "33c scripts/….sh stays and its quote acknowledges" "" \
 assert_host_case "33c src/main.rs stays and its quote acknowledges" "" \
   "scripts/review-thread-resolution.sh and src/main.rs disagree." \
   "src/main.rs disagree を確認しました。"
+
+# ---------------------------------------------------------------------------
+# 34-35. The fourth fix of the design (a59ca97, "HTML コメントと URL の中の語"):
+# the author's words are read only where the page shows them. The rows of the
+# design's 34・35 table (36 rows) are fixed here with the same three items as
+# 25〜29 (#issuecomment-10, -11 and -108).
+# ---------------------------------------------------------------------------
+
+# 34. HTML comments (hole 5). Only a whole-line comment outside a fence is
+# dropped (read as a blank line); any other "<!--" outside a fence (mid-line,
+# escaped, unclosed, "<!-->", a range that crosses code) means the reply
+# approves nothing. Bot markers on their own lines change nothing.
+# j5ik2o/ci#43 discussion_r4726604859 (CodeRabbit) is 34a / 34b.
+assert_acked "34a <!-- fixed --> does not acknowledge (CodeRabbit)" "" \
+  $'<!-- fixed --> #issuecomment-10'
+assert_acked "34b <!-- 確認しました --> does not acknowledge" "" \
+  $'<!-- 確認しました --> #issuecomment-10'
+assert_acked "34c an ID inside an HTML comment is not a reference" "" \
+  $'<!-- #issuecomment-10 --> を確認しました'
+assert_acked "34d a whole-line bot marker with pending does not veto" "10" \
+  $'#issuecomment-10 を確認しました\n<!-- review-state: pending #issuecomment-10 -->'
+assert_acked "34e a multi-line whole comment with まだ does not veto" "10" \
+  $'#issuecomment-10 を確認しました。\n<!--\n#issuecomment-10 はまだ\n-->'
+assert_acked "34f a mid-line comment approves nothing (red on purpose)" "" \
+  $'#issuecomment-10 を<!-- メモ -->確認しました。'
+assert_acked "34g an unclosed <!-- at the line head approves nothing" "" \
+  $'<!-- メモ\n確認しました #issuecomment-10'
+assert_acked "34h an unclosed <!-- mid-paragraph approves nothing" "" \
+  $'確認しました #issuecomment-10 <!-- 閉じないメモ'
+assert_acked "34i <!-- in a code span up to --> outside approves nothing" "" \
+  $'#issuecomment-10 は `<!--` の件で未対応、`-->` の件は対応しました'
+assert_acked "34j a comment range that crosses a fence approves nothing" "" \
+  $'確認しました #issuecomment-10\n<!--\n```\n#issuecomment-11 はまだです\n```\n-->'
+assert_acked "34k fixed in a comment attached to a quote does not acknowledge" "" \
+  $'> Action not completed / Review rate limited\n<!-- fixed -->\n\nWhich one?'
+assert_acked "34l an escaped \\<!-- approves nothing" "" \
+  $'#issuecomment-10 を確認しました。\n\\<!-- #issuecomment-10 は未対応です -->'
+assert_acked "34m an escaped \\<!-- does not hide the visible not fixed" "" \
+  $'#issuecomment-10 is fixed. \\<!-- #issuecomment-10 is not fixed -->'
+assert_acked "34n a comment after a fence's closing line approves nothing" "" \
+  $'ログの引用です。\n```\nlog\n```<!-- メモ -->\n#issuecomment-10 を確認しました。'
+assert_acked "34o an unclosed <!-- inside a fence does not stop the approval" "10" \
+  $'確認しました #issuecomment-10\n```\n<!-- 未閉じの引用\n```'
+assert_acked "34p a codex-review-state marker line does not change the result" "10" \
+  $'<!-- codex-review-state:v1 {"code_review":{"status":"completed"}} -->\n#issuecomment-10 を確認しました'
+assert_acked "34q <!--> closes on its line and keeps the visible まだ" "" \
+  $'確認しました #issuecomment-10\n<!-->\n#issuecomment-10 はまだです\n-->'
+assert_acked "34r <!---> closes on its line and keeps the visible まだ" "" \
+  $'確認しました #issuecomment-10\n<!--->\n#issuecomment-10 はまだです\n-->'
+
+# 35. Words inside URLs (holes 6 and 7). Negations, conditions and questions
+# are read with URLs blanked narrowly (ASCII, no trailing punctuation, one
+# level of parentheses); acknowledgement words with URLs blanked widely (up to
+# whitespace). IDs still match on the original text.
+# j5ik2o/ci#43 discussion_r4726604865 (CodeRabbit) is 35a / 35a'.
+assert_acked "35a pending in a URL path does not veto (CodeRabbit)" "10" \
+  $'https://github.com/acme/pending/pull/7#issuecomment-10 を確認しました'
+assert_acked "35a' the same URL in angle brackets (CodeRabbit's form)" "10" \
+  $'<https://github.com/acme/pending/pull/7#issuecomment-10> を確認しました'
+assert_acked "35b not in a URL path does not veto" "10" \
+  $'https://github.com/acme/not/pull/7#issuecomment-10 を確認しました'
+assert_acked "35c pending in a scheme-less host/path does not veto" "10" \
+  $'github.com/acme/pending/pull/7#issuecomment-10 を確認しました'
+assert_acked "35d is pending in the author's text still vetoes" "" \
+  $'#issuecomment-10 is pending'
+assert_acked "35e fixed only inside a URL does not acknowledge (hole 7)" "" \
+  $'https://github.com/acme/fixed/pull/7#issuecomment-10'
+assert_acked "35f a ? inside a URL is not a question" "10" \
+  $'確認しました https://github.com/o/r/pull/1?notification_referrer_id=x#issuecomment-10'
+assert_acked "35g a trailing ? after a URL is a question" "" \
+  $'Is #issuecomment-10 fixed in https://github.com/o/r/pull/2?'
+assert_acked "35h はまだです right after a URL is read as まだ" "10" \
+  $'次を確認しました。\n- https://github.com/o/r/pull/1#issuecomment-10\n- https://github.com/o/r/pull/1#issuecomment-11はまだです'
+assert_acked "35i URLs in a mixed clause: 確認しましたが、… 未対応" "10" \
+  $'https://github.com/o/r/pull/1#issuecomment-10 は確認しましたが、https://github.com/o/r/pull/1#issuecomment-11 は未対応です。'
+assert_acked "35j See <URL>, fixed. acknowledges" "10" \
+  $'See https://github.com/o/r/pull/1#issuecomment-10, fixed.'
+assert_acked "35k will be fixed, see <URL>. does not" "" \
+  $'#issuecomment-10 will be fixed, see https://github.com/o/r/pull/1#issuecomment-11.'
+assert_acked "35l )/fixed in a link destination with parentheses is not a word" "" \
+  $'#issuecomment-10 [status](https://example.com/not/(foo)/fixed)'
+assert_acked "35m )/fixed in a bare URL with parentheses is not a word" "" \
+  $'#issuecomment-10 https://example.com/not/(foo)/fixed'
+assert_acked "35n [PR](<URL>) を確認しました acknowledges" "10" \
+  $'[PR](https://github.com/o/r/pull/1#issuecomment-10) を確認しました'
+assert_acked "35o fixed after two levels of parentheses is not a word" "" \
+  $'#issuecomment-10 https://example.com/not/((foo))/fixed'
+assert_acked "35p を確認しました right after a URL is not read (red on purpose)" "" \
+  $'https://github.com/o/r/pull/1#issuecomment-10を確認しました'
+assert_acked "35q 確認しました: <URL> acknowledges (pair of 35p)" "10" \
+  $'確認しました: https://github.com/o/r/pull/1#issuecomment-10'
+assert_acked "35r a contrast word inside a URL does not split it" "" \
+  $'#issuecomment-10 https://example.com/not/ましたが/fixed'
 
 # The guidance on red ("赤のときの案内"): for notices that repeat the same
 # text, paste each notice's URL (anchor) with a word on the same line. The

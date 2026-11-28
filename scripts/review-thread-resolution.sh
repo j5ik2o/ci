@@ -504,11 +504,51 @@ def ack_at_start:
   | ascii_downcase
   | test("^\\s*(" + trusted_ack_words + ")");
 
+# HTML コメント。`<!--` から最初の `-->` まで（途中の `>` で切らない）。項目の照合（norm_text）で使う（v1 から）。
+def strip_html_comments:
+  gsub("(?s)<!--.*?-->"; " ");
+
+# 確認の側の HTML コメント（4 回目の直し）。元の本文の行とフェンスの境界（fence_split と同じ規則）で決め、
+# 除くのは、フェンスの外で、行頭（空白 3 つまで）の `<!--` から、最初の `-->` のあとが空白だけの行までの
+# 「行全体のコメント」だけ。その行を空行にする（GitHub では HTML のブロックとして隠れ、前後の段落を切る）。
+# フェンスの中の `<!--` は文字なので触らない。それ以外の `<!--`（行の途中、`\<!--` のエスケープ、引用・見出しの中、
+# `-->` のあとに文が続く、閉じない、範囲にバッククォートか `~~~` を含む）は bad にし、その確認は何も承認しない
+# （見えている文を消すか、隠れた文を読むかが決まらない。迷う形は赤に倒す）。
+# lines: 除いたあとの行。bad: 境界が決まらない形があったか。
+def html_comment_lines:
+  reduce ((.body // "") | split("\n"))[] as $line (
+    { open: null, incom: false, lines: [], bad: false };
+    if .incom then
+      .lines += [""]
+      | (if ($line | test("`|~~~")) then .bad = true else . end)
+      | if ($line | test("-->")) then
+          .incom = false
+          | (if ($line | test("^(?:(?!-->).)*-->\\s*$")) then . else .bad = true end)
+        else . end
+    elif .open != null then
+      .lines += [$line]
+      | (if fence_closes($line; .open) then .open = null else . end)
+    elif fence_open($line) != null then
+      .open = fence_open($line) | .lines += [$line]
+    elif ($line | test("^ {0,3}<!--")) then
+      .lines += [""]
+      | (if ($line | test("`|~~~")) then .bad = true else . end)
+      # 始まりの行が `-->` を含めば、その行で閉じる（`<!-->`・`<!--->` も。GitHub と同じ）。行全体の形でなければ bad。
+      | if ($line | test("-->")) then
+          (if ($line | test("^ {0,3}<!--(?:(?!-->).)*-->\\s*$")) then . else .bad = true end)
+        else .incom = true end
+    elif ($line | test("<!--")) then
+      .lines += [$line] | .bad = true
+    else
+      .lines += [$line]
+    end)
+  | if .incom then .bad = true else . end;
+
 # フェンスは残す（フェンス内の引用も照合の対象）。確認の語は norm_text を通さず、
 # 単位と節（clauses）の masked で見る。
 def norm_text($body):
   $body
-  | gsub("(?s)<!--.*?-->"; " ")
+  | strip_html_comments
   | split("\n")
   | map(gsub("^\\s*>\\s?"; ""))
   | map(gsub("<[^>]+>"; " "))
@@ -529,10 +569,42 @@ def raw_body:
 def file_ext_labels:
   "js|mjs|cjs|jsx|ts|tsx|json|ya?ml|toml|lock|txt|kts?|scala|sbt|qnt|html?|css|go";
 
-def strip_urls($body):
+# URL を同じ長さの空白にする（位置を保つ）。scheme つきと scheme の無いホスト・パスの両方。
+# $p は URL の本体（1 文字以上）、$tail は URL の終わりに置けない文字の後読み。正規表現の形は 1 つで、
+# 範囲だけを用途で分ける（4 回目の直し）。
+def blank_urls($body; $p; $tail):
   ($body // "")
-  | gsub("(?i)https?://[^\\s)>\\]]+"; " ")
-  | gsub("(?i)(?<pre>^|[^a-z0-9_./-])(?:[a-z0-9-]+\\.)+(?!(?:" + file_ext_labels + ")/)[a-z]{2,}/[^\\s)>\\]]*"; "\(.pre) ");
+  | gsub("(?i)(?<u>https?://" + $p + $tail + ")"; .u | gsub("."; " "))
+  | gsub("(?i)(?<pre>^|[^a-z0-9_./-])(?<u>(?:[a-z0-9-]+\\.)+(?!(?:" + file_ext_labels + ")/)[a-z]{2,}/"
+         + "(?:" + $p + $tail + ")?)"; "\(.pre)" + (.u | gsub("."; " ")));
+
+# 断片の照合（quote_text・refs_in・mentions_in。norm_text が空白を畳む）。06770ed と同じく、URL を空白・`)`・`>`・`]` の
+# 手前まで広く取る。ここでは外し過ぎが赤の側（引用が使えない）、外し損ないが緑の側（URL の中のパスや、ASCII でない
+# 文字の後ろが 20 文字の窓として当たる）なので、広く取る。
+def strip_urls($body):
+  blank_urls($body; "[^\\s)>\\]]+"; "");
+
+# 節の masked で空白にする URL の位置の印（コードポイントごとの真偽。4 回目の直し）。ここでは逆に、外し過ぎが緑の側
+# （見えている打ち消しや疑問を消す）なので、狭く取る。URL の文字を ASCII の印字できる文字（\x21〜\x7e）から
+# `(`（\x28）・`)`（\x29）・`>`（\x3e）・`]`（\x5d）を除いたものに限り（空白なしで続く `…#issuecomment-11はまだです` を URL に入れない）、
+# 終わりの `?`・`!`・`.`・`,`・`:`・`*`・`_`・`~` も URL に入れない（GFM の自動リンクと同じ。`Is #10 fixed in https://…/2?` の `?`）。
+# 対になった括弧（1 段）は URL に含める（GFM の自動リンクと同じ。Markdown のリンク先 `[状況](https://…/not/(foo)/fixed)` の
+# `)/fixed` を作成者の文として読まない）。対にならない `(` と `)` は URL に入れない。
+def url_char: "[\\x21-\\x27\\x2a-\\x3d\\x3f-\\x5c\\x5e-\\x7e]";
+def url_body: "(?:" + url_char + "|\\(" + url_char + "*\\))+";
+def url_tail: "(?<![?!.,:*_~])";
+
+def url_flags($s):
+  ($s | explode) as $o
+  | (blank_urls($s; url_body; url_tail) | explode) as $m
+  | [ range(0; $o | length) as $i | $m[$i] == 32 and $o[$i] != 32 ];
+
+# 確認の語を読まない URL の位置の印（4 回目の直し）。scheme から空白まで（括弧も ASCII でない文字も含む）。
+# 確認の語では外し過ぎが赤の側なので、広く取る（2 段以上の括弧 `…/not/((foo))/fixed` の `fixed` も読まない）。
+def url_flags_wide($s):
+  ($s | explode) as $o
+  | (blank_urls($s; "\\S+"; "") | explode) as $m
+  | [ range(0; $o | length) as $i | $m[$i] == 32 and $o[$i] != 32 ];
 
 def quote_text($c):
   norm_text(strip_urls($c.body));
@@ -635,9 +707,14 @@ def lead_of($us; $j):
   | if $p != null and $p.type == "para" then $p.k else null end;
 
 # 節に分ける。句点・感嘆符・疑問符・読点・セミコロン・改行と、空白か終わりが続くピリオドで切る。
-# 「」『』“”（）() の中と、インラインのコードの中では切らない。
-# raw: 照合に使う元の文字列。masked: 確認の語を探す文字列（「」『』“” の中身、インラインのコード、
-# $cover が印を付けた項目の写しを空白にする）。
+# 「」『』“”（）() の中と、インラインのコードの中と、URL の中（$url が印を付けた文字）では切らない。
+# raw: 照合に使う元の文字列。masked: 打ち消し・まだの表明・疑問を探す文字列（「」『』“” の中身、インラインのコード、
+# $cover が印を付けた項目の写し、$url が印を付けた URL を空白にする。URL は 4 回目の直し）。
+# words: 確認の語を探す文字列。masked に加えて、$urlw が印を付けた広い URL（空白まで）も空白にする（4 回目の直し）。
+# 確認の語は外し過ぎが赤の側、打ち消しは外し過ぎが緑の側なので、URL の範囲を分ける。3 つとも同じ長さ。
+def words_of($m; $st; $urlw):
+  [ range(0; $m | length) as $k | if ($urlw[$st + $k] // false) then 32 else $m[$k] end ] | implode;
+
 # インラインのコードは CommonMark と同じく、同じ長さのバッククォートの列で開いて閉じる
 # （``fixed`` も 2 つの列で囲んだコード）。閉じる列が無い列は、ただの文字として扱う。
 def backtick_runs($cs):
@@ -647,13 +724,13 @@ def backtick_runs($cs):
       | { start: $i,
           len: (([ range($i; $len) as $k | select($cs[$k] != 96) | $k ] | first // $len) - $i) } ];
 
-def clauses($cover):
+def clauses($cover; $url; $urlw):
   explode as $cs
   | ($cs | length) as $len
   | backtick_runs($cs) as $runs
   | ($runs | map({key: (.start | tostring), value: .len}) | from_entries) as $runat
   | reduce range(0; $len) as $i (
-      { out: [], raw: [], masked: [], depth: 0, qdepth: 0, code: null };
+      { out: [], raw: [], masked: [], st: 0, depth: 0, qdepth: 0, code: null };
       ($cs[$i]) as $c
       | ([$c] | implode) as $ch
       | (if $i + 1 < $len then ([$cs[$i + 1]] | implode) else "" end) as $nx
@@ -664,6 +741,8 @@ def clauses($cover):
         elif $run != null and .code == $run then .code = null | .raw += [$c] | .masked += [32]
         elif .code != null then .raw += [$c] | .masked += [32]
         elif $ch == "`" then .raw += [$c] | .masked += [32]
+        # URL の中の文字は空白にし、括弧の深さも変えず、節も切らない（`?`・`,`・`;` を含む URL）。
+        elif ($url[$i] // false) then .raw += [$c] | .masked += [32]
         else
           (if ($ch | test("^[「『“]$")) then .qdepth += 1 | .depth += 1
            elif ($ch | test("^[」』”]$")) then .qdepth = ([0, .qdepth - 1] | max) | .depth = ([0, .depth - 1] | max)
@@ -675,10 +754,13 @@ def clauses($cover):
           | if .depth == 0
                and (($ch | test("^[。！？!?；;、，,\n]$"))
                     or ($ch == "." and ($nx == "" or ($nx | test("^\\s$"))))) then
-              .out += [{raw: (.raw | implode), masked: (.masked | implode)}] | .raw = [] | .masked = []
+              .out += [{raw: (.raw | implode), masked: (.masked | implode), words: words_of(.masked; .st; $urlw)}]
+              | .raw = [] | .masked = [] | .st = $i + 1
             else . end
         end)
-  | .out + (if (.raw | length) > 0 then [{raw: (.raw | implode), masked: (.masked | implode)}] else [] end)
+  | .out + (if (.raw | length) > 0
+            then [{raw: (.raw | implode), masked: (.masked | implode), words: words_of(.masked; .st; $urlw)}]
+            else [] end)
   | map(select(.raw | test("\\S")));
 
 def en_ack_words: "\\backnowledged\\b|\\baddressed\\b|\\bfixed\\b";
@@ -715,6 +797,7 @@ def cover_flags($s; $texts):
 
 # まだの表明の一致。直後が `こと`・`の`・`と`・`旨` の一致は数えない（`エラーが出ていないことを確認しました` の
 # `ていない` は、確認した内容であって、まだの表明ではない）。
+
 def pending_hits($s):
   [ $s | match(pending_cue; "g")
     | select(($s[(.offset + (.string | length)):] | test("^\\s*(こと|の|と|旨)")) | not) ];
@@ -723,10 +806,11 @@ def pending_hits($s):
 # neg（打ち消された語かまだの表明がある。打ち消されない語と同じ節にあっても neg）/ none。
 # 同じ節に肯定と打ち消しが並ぶとき（`#10 is fixed and #11 is not fixed`）は、どの参照がどちらかを
 # 決められないので、節の全体を打ち消しにして赤の側に倒す。
-# 語・打ち消し・まだの表明は masked（引用・インラインのコード・項目の写しを空白にしたもの）で見る。
+# 打ち消し・まだの表明は masked（引用・インラインのコード・項目の写し・URL を空白にしたもの）で、
+# 確認の語は words（masked に加えて広い URL を空白にしたもの）で見る。2 つは同じ長さなので、語の位置で masked を読める。
 def polarity:
   (.masked | ascii_downcase) as $s
-  | [ $s | match("(" + ack_words + ")"; "g") ] as $hits
+  | [ .words | ascii_downcase | match("(" + ack_words + ")"; "g") ] as $hits
   | ([ $hits[] | select(negated2($s; .) | not) ] | length) as $pos
   | (($hits | length) - $pos) as $negw
   | (pending_hits($s) | length) as $cue
@@ -737,15 +821,25 @@ def polarity:
 # 節を切る前に、逆接の接続（`ましたが`・`ですが`・`けど`・`ものの`、英語の `but`・`however`・`although`・
 # `whereas`）の位置に改行を入れる。読点の無い `#10 は確認しましたが #11 は未対応です` や
 # `#10 is fixed but #11 is not fixed` を 2 つの節に分ける。参照の照合は元の本文で行う。
+# URL の中（url_flags_wide の広い範囲）には改行を入れない（4 回目の直し。`https://…/not/ましたが/fixed` を
+# 2 つに切ると、URL の残りの `/fixed` を確認の語と読む）。位置は match の offset で取り、indices を使わない。
 def split_contrast:
-  gsub("(?<a>(ました|です|でした|ません)が|けれども|けれど|けど|ものの)(?![、，,])"; "\(.a)\n")
-  | gsub("(?i)(?<a>[ \\t])(?<b>but|however|although|whereas)\\b"; "\(.a)\n\(.b)");
+  . as $t
+  | url_flags_wide($t) as $wf
+  | ([ ($t | match("((ました|です|でした|ません)が|けれども|けれど|けど|ものの)(?![、，,])"; "g")
+          | select(($wf[.offset] // false) | not) | .offset + .length),
+       ($t | match("(?i)[ \\t](but|however|although|whereas)\\b"; "g")
+          | select(($wf[.offset + 1] // false) | not) | .offset + 1) ]) as $pts
+  | ($t | explode) as $cs
+  | [ range(0; ($cs | length) + 1) as $i
+      | (if any($pts[]; . == $i) then [10] else [] end) + (if $i < ($cs | length) then [$cs[$i]] else [] end) ]
+  | add // []
+  | implode;
 
 # 文字列 $t が指す項目の位置（$its の key）。id か、その項目だけが持つ 20 文字の断片。
 # $excl は既定で外した通知の quote_text。通知は項目にならないが、「ほかの項目」には数える（3 回目の直し）。
 # 外した通知と同じ文を持つ項目（通知を引用したレビューなど）を、通知の引用で承認しないため。
-# 性能のための等価な書き換え：$texts（項目ごとの quote_text）は acked_keys で 1 回だけ計算して渡し、
-# 窓の照合は first で最初に当たったところで打ち切る。
+# 性能のための等価な書き換え：$texts は acked_keys で 1 回だけ計算して渡し、窓の照合は first で打ち切る。
 def has_other($texts; $excl; $k; $w):
   (($texts | length) as $n
    | (first(range(0; $n) | select(. != $k and ($texts[.] | contains($w))) | 1) // null) != null)
@@ -763,6 +857,7 @@ def refs_in($t; $its; $texts; $excl):
       | $k ];
 
 # 打ち消しの節が触れている項目（id か、URL を外した 20 文字の窓が項目の本文にある。一意でなくてよい）。
+
 def mentions_in($t; $its; $texts):
   ($t | ascii_downcase) as $raw
   | (norm_text(strip_urls($t)) | windows(20)) as $ws
@@ -773,15 +868,19 @@ def mentions_in($t; $its; $texts):
       | $k ];
 
 # 確認 $a が承認する項目の位置の集合。
+
 def acked_keys($its; $excl):
-  . as $a
+  html_comment_lines as $h
+  | if $h.bad then [] else
+  .body = ($h.lines | join("\n"))
   | [ $its[] | quote_text(.) ] as $texts
   | units as $us
   | attach_targets($us) as $tg
   | [ range(0; $us | length) as $j
       | select($us[$j].type != "block")
       | ($us[$j].text | split_contrast) as $st
-      | ($st | clauses(cover_flags($st | ascii_downcase; $texts)) | map(. + {pol: polarity})) as $cl
+      | ($st | clauses(cover_flags($st | ascii_downcase; $texts); url_flags($st); url_flags_wide($st))
+             | map(. + {pol: polarity})) as $cl
       | { j: $j, type: $us[$j].type, cl: $cl,
           pol: (if any($cl[]; .pol == "pos") and any($cl[]; .pol == "neg") then "mixed"
                 elif any($cl[]; .pol == "pos") then "pos"
@@ -800,7 +899,8 @@ def acked_keys($its; $excl):
             then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts; $excl)[] else empty end
         else empty end ]
   | unique
-  | map(select(. as $k | $veto | index($k) | not));
+  | map(select(. as $k | $veto | index($k) | not))
+  end;
 
 def report_author_login:
   (.author.login // "") | sub("\\[bot\\]$"; "");

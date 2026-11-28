@@ -1,0 +1,32 @@
+[
+  {
+    "url": "https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7183838157",
+    "body": "<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{\"commit_sha\":\"117bdb3feb475320767522bc763cefd3e2682fa0\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"failed\"},\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":null}} -->\n\n<details>\n<summary><strong>Codex Review Summary</strong>: ❌ Failed</summary>",
+    "createdAt": "2026-11-26T05:49:28Z",
+    "updatedAt": "2026-11-26T05:49:28Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "chatgpt-codex-connector"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7183838627",
+    "body": "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).\nTo continue using code reviews, add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/settings/code-review).",
+    "createdAt": "2026-11-26T05:49:30Z",
+    "updatedAt": "2026-11-26T05:49:30Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "chatgpt-codex-connector"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7184240781",
+    "body": "## ボットの指摘への対応\n対象: https://github.com/j5ik2o/modern-ddd-book/pull/695#pullrequestreview-6069173108\n指摘と対応: Devin Review の4件は、すべて直しました（https://github.com/j5ik2o/modern-ddd-book/pull/695/commits/a9a077b61119eb7183f5a7bd653b68d5ad8c1503 ）。\n- 脚注・コードブロック・見出しにだけあった文を本文へ移すと通ってしまう件は、base の本文を `splitChapter` の本文の行（見出しを除く）に絞って直しました。MUST の基準 (2)「検査を素通りさせる」に当たります。\n- 推移律の件は、テストと設計の I6 に、原稿を固定した比較に限ると明記しました。\n- 引数の配列を変える件と、公開クラスの件は、AGENTS.md の MUST に当たるので直しました。\n\n各スレッドには返信して、解消してあります。\n\n## ボットの指摘への対応\n対象: https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7183838157 , https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7183838627\n指摘と対応: どちらも Codex の利用上限の知らせで、指摘はありません。直すものはありません。Codex のレビューは、この PR では受けられていません。Cursor Bugbot（`117bdb3` で成功）と Devin Review の結果で進めます。\n\n## CI で確かめたこと（設計の第 6.2 節）\n- 再利用の workflow の中では `github.event_name` は `pull_request` で、`inputs.test_merge` は空ではありませんでした。`verify` のジョブのログの行は `Baseline guard: GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/695/merge TEST_MERGE=set` です（run 45764145292 の job 139720962641）。設計の推論どおりで、契約テストの組の前提とも合います。\n- base は、試験マージの第1親 `4659ea9414bf1a3dd6c4f0fde9ee7428435036d9` を、浅い checkout に `--depth=1` で取って決まりました（`Baseline guard base: 4659ea94… (first parent of the PR CI test merge)`）。ガードの段の出力は「7 ファイル、base 4659ea9414bf（BASELINE_GUARD_BASE）」「増えていない」です。新しい先端 `a9a077b6` の run 45765786915 でも、`verify` は成功しました。\n- docs 向けの経路（`verify.yml` の `pull_request` での直の起動）は、この PR では走りません。そのため、契約テストの一時のリポジトリ（浅いクローンのマージのコミット）でだけ確かめています。\n",
+    "createdAt": "2026-11-26T06:15:01Z",
+    "updatedAt": "2026-11-26T06:15:01Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  }
+]

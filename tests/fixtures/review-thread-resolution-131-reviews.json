@@ -1,0 +1,57 @@
+[
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#pullrequestreview-5914090728",
+    "body": "<!-- BUGBOT_REVIEW -->\nCursor Bugbot has reviewed your changes using default effort and found 1 potential issue.",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-16T01:34:21Z",
+    "updatedAt": "2026-11-16T01:34:21Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "cursor"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#pullrequestreview-5914396603",
+    "body": "",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-16T02:32:41Z",
+    "updatedAt": "2026-11-16T02:32:41Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#pullrequestreview-5914420067",
+    "body": "<!-- coderabbit-ai-generated:v1 -->\n\n**Actionable comments posted: 2**\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-16T02:37:19Z",
+    "updatedAt": "2026-11-16T02:37:19Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "coderabbitai"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#pullrequestreview-5914440532",
+    "body": "",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-16T02:40:58Z",
+    "updatedAt": "2026-11-16T02:40:58Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#pullrequestreview-5914440723",
+    "body": "",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-16T02:41:00Z",
+    "updatedAt": "2026-11-16T02:41:00Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  }
+]

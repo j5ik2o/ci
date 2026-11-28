@@ -1,0 +1,72 @@
+[
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6904795042",
+    "body": "<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{\"commit_sha\":\"78230de47839cf36dff9ac5480bf4fb0d25d9dac\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"failed\"},\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":null}} -->\n\n<details>\n<summary><strong>Codex Review Summary</strong>: ❌ Failed</summary>",
+    "createdAt": "2026-11-16T01:28:11Z",
+    "updatedAt": "2026-11-16T01:28:11Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "chatgpt-codex-connector"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6904795280",
+    "body": "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated comment: summarize by coderabbit.ai -->",
+    "createdAt": "2026-11-16T01:28:12Z",
+    "updatedAt": "2026-11-16T02:41:56Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "coderabbitai"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6904795586",
+    "body": "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).\nTo continue using code reviews, add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/settings/code-review).",
+    "createdAt": "2026-11-16T01:28:14Z",
+    "updatedAt": "2026-11-16T01:28:14Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "chatgpt-codex-connector"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6905873562",
+    "body": "```text\nTAKTのCI回復を停止しました。修正回数: 0、再実行回数: 0。調査要点: 失敗は StatusContext『Check unresolved comments』1件のみ（failure、description『Review-thread gate failure.』、target run 43793650983 / attempt 1 / job 133057471601、HEAD 05b83064422ba57b9cf1faa7f545faf8b9f4ce73、status投稿 2026-11-16T02:44:27Z）。run自体はsuccessだが、jobログに『No unresolved PR review threads for PR #131.』『0 unresolved PR review thread(s) and 1 unacknowledged top-level PR comment(s) or review summary comment(s) remain on PR #131.』があり、failure statusを投稿している。GraphQLでレビュースレッド3件中未解決0件。唯一の未acknowledgeトップレベルコメントは chatgpt-codex-connector[bot] の『You have reached your Codex usage limits for code reviews.』(2026-11-16T01:28:14Z)で、既定のignore対象『chatgpt-codex-connector / Codex Review』に一致しないためブロックしている。done (run 43793621475 / job 133057378780) は05b8306でmake done・npm ci・aislop checkすべてsuccess、失敗テスト名やアサーションは存在せず基盤障害でもない。PR累積差分 refs/takt/pr-base/main (54e377b)…05b8306 は .takt/workflows/taktdash-change.yaml、tools/repo-gate/repo_gate.py、tools/repo-gate/repo_gate_test.py の3ファイル (+1281/-231) で、本ゲート失敗と因果関係はない。所在はリポジトリ側のreview-threadゲート状態（外部障害・テスト欠陥ではない）。根本修正は当該通知をトップレベルでacknowledgeすること（ゲートが用意した解消経路）で、コード/テスト改変・ゲート除外・再実行だけでは因果を解消しない。collector manifestはcomplete=false/checks=0/unavailable=1（StatusContextをActionsログ参照に変換できないため）だが、runログ・status API・PRコメントを直接取得して上記を確定した。fixRounds=0、rerunCount=0。。最後の失敗チェック・run・job・証拠不足: {\"checks\":[],\"unavailable\":[{\"name\":\"Check unresolved comments\",\"url\":\"https://github.com/j5ik2o/takt-dash/actions/runs/43793650983\",\"reason\":\"Failed check has no supported Actions log reference\"}]}\n```",
+    "createdAt": "2026-11-16T02:46:31Z",
+    "updatedAt": "2026-11-16T02:46:31Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6905911803",
+    "body": "Codex（chatgpt-codex-connector）の「You have reached your Codex usage limits for code reviews.」（2026-11-16T01:28:14Z）を確認しました。オーナーの定めに従い、レビューボットの利用上限は「指摘なし」として扱い、この通知を理由に PR を止めません。本 PR の実際のレビュー指摘は、Cursor Bugbot の proto-check 欠落（a1b0d4a で修正）と CodeRabbit Major 2件（05b8306 で修正）で、いずれも返信してスレッドを解決済みです（未解決スレッド 0 件）。\n\n対象: head 05b8306、base main 54e377b。検証: make done exit 0（63秒、web 182 passed / 0 failed）、repo_gate_test 32 passed、takt workflow doctor OK、aislop check exit 0、repo_gate --root .（make done 込み）exit 0、CI done success（run 43793621475、3m19s）。until: prepare の仕上げを再開します。",
+    "createdAt": "2026-11-16T02:49:20Z",
+    "updatedAt": "2026-11-16T02:49:20Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6905924157",
+    "body": "TAKT prepared this PR after base synchronization and CI passed for head 05b83064422ba57b9cf1faa7f545faf8b9f4ce73. Awaiting human merge.",
+    "createdAt": "2026-11-16T02:50:16Z",
+    "updatedAt": "2026-11-16T02:50:16Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/takt-dash/pull/131#issuecomment-6905992547",
+    "body": "## 窓口の検証記録（マージ前の記録）\n\nこのプルリクエストのレビュー状況と、窓口（オーナーの代理）がマージ前に確かめた内容を、後から読む人のために記録します。\n\n1. Codex のレビュー要約は旧い先端 78230de を対象としたもので、その指摘（machine_gate が proto-check を実行しない）は a1b0d4a で修正済みです。スレッドは解決済みです。\n2. a1b0d4a と 05b8306 は、どのレビューボットのレビューも受けていません。CodeRabbit と Codex は利用上限に達しており、Cursor が見たのは 78230de だけです。オーナーの決まり（レビューボットが利用上限でレビューできていないことを理由にプルリクエストを止めない。上限時は指摘がないものとして進める）に従い、この2件のコミットは窓口が自分で検証しました。\n3. 窓口の検証結果（先端 05b8306 で実測）: repo_gate_test.py は 32 件成功、0 件失敗。repo_gate.py の本体は exit 0 で全6検査が成功。takt workflow doctor taktdash-change は Workflow OK。05b8306 の差分（repo_gate の迂回の穴を塞ぐ変更）は窓口が読みました。CI の done は、このプルリクエストの変更（ワークフロー定義と repo_gate）を検査しないため、この3つを窓口が実測しました。\n4. 「Check unresolved comments」は、takt の merge-prepare が投稿した失敗報告（作成者名義のコメント）を確認として数えて成功しました。未確認だった実体は Codex の利用上限の通知だけであり結果は正しいものですが、関門の判定の形の問題として [issue #134](https://github.com/j5ik2o/takt-dash/issues/134) に記録しました。\n\n上記の検証がそろったため、窓口がこのプルリクエストをマージします。\n",
+    "createdAt": "2026-11-16T02:55:20Z",
+    "updatedAt": "2026-11-16T02:55:20Z",
+    "authorAssociation": "OWNER",
+    "author": {
+      "login": "j5ik2o"
+    }
+  }
+]

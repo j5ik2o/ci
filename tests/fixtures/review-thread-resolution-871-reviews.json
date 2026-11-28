@@ -1,0 +1,24 @@
+[
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#pullrequestreview-6081889427",
+    "body": "**Devin Review** found 4 potential issues.\n\n<!-- devin-review-badge-begin -->",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-27T00:14:10Z",
+    "updatedAt": "2026-11-27T00:14:10Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "devin-ai-integration"
+    }
+  },
+  {
+    "url": "https://github.com/j5ik2o/event-store-adapter-java/pull/871#pullrequestreview-6081916567",
+    "body": "<!-- coderabbit-ai-generated:v1 -->\n\n**Actionable comments posted: 6**\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+    "state": "COMMENTED",
+    "submittedAt": "2026-11-27T00:19:29Z",
+    "updatedAt": "2026-11-27T00:19:29Z",
+    "authorAssociation": "NONE",
+    "author": {
+      "login": "coderabbitai"
+    }
+  }
+]

@@ -6,6 +6,10 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$tmpdir/bin"
 
+# The judge's results depend on the jq version (byte vs code point offsets),
+# so the log names the one in use.
+printf '# %s\n' "$(jq --version 2>&1 || true)"
+
 cat > "$tmpdir/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -352,6 +356,11 @@ item_body="The retry path is still broken. Please fix it."
 other_item_body="The queue drains twice on shutdown. Please check it."
 item_quote="The retry path is still broken"
 limit_body="You have reached your Codex usage limits for code reviews."
+# The design's third fix (06770ed) drops Codex's usage-limit notice by default
+# when both the author is chatgpt-codex-connector and the body starts with
+# `You have reached your Codex usage limits`. Cases that need a notice to stay
+# an item post it as another bot (観点 18・23 and the note on 25〜29's table).
+notice_login="review-bot"
 
 fixture_comment() {
   local url="$1"
@@ -738,16 +747,18 @@ assert_conclusion "17b OWNER acknowledgement on a Bot PR passes" 0 success \
   GH_PR_AUTHOR="takt-bot" GH_PR_AUTHOR_TYPE="Bot"
 
 # 18. #131's real timeline. The failure report alone does not acknowledge;
-# the 02:49:20 quote plus 確認しました does.
+# the 02:49:20 quote plus 確認しました does. The notice is posted as another bot
+# so it stays an item (観点 18: with the real author it is dropped by default
+# and the gate is green from the start, which 30a fixes).
 write_fixture "$tmpdir/comments-18a.json" \
   "$(fixture_comment "$pr_url#issuecomment-301" $'Codex Review Summary\n\nNo findings on this commit.' "2026-11-16T01:28:11Z" "" chatgpt-codex-connector)" \
-  "$(fixture_comment "$pr_url#issuecomment-302" "$limit_body" "2026-11-16T01:28:14Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-302" "$limit_body" "2026-11-16T01:28:14Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-303" $'TAKTのCI回復を停止しました。\n\n'"$limit_body" "2026-11-16T02:46:31Z" "" alice)"
 assert_conclusion "18a #131 failure report alone stays red" 1 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-18a.json"
 write_fixture "$tmpdir/comments-18b.json" \
   "$(fixture_comment "$pr_url#issuecomment-301" $'Codex Review Summary\n\nNo findings on this commit.' "2026-11-16T01:28:11Z" "" chatgpt-codex-connector)" \
-  "$(fixture_comment "$pr_url#issuecomment-302" "$limit_body" "2026-11-16T01:28:14Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-302" "$limit_body" "2026-11-16T01:28:14Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-303" $'TAKTのCI回復を停止しました。\n\n'"$limit_body" "2026-11-16T02:46:31Z" "" alice)" \
   "$(fixture_comment "$pr_url#issuecomment-304" "Codex の「$limit_body」を確認しました。次回のレビューを待ちます。" "2026-11-16T02:49:20Z" "" alice)"
 assert_conclusion "18b #131 quote acknowledgement passes" 0 success \
@@ -758,15 +769,32 @@ assert_conclusion "18b #131 quote acknowledgement passes" 0 success \
 # one ```text fence holding the quote, 未acknowledge and a run URL) and the
 # author's acknowledgement (02:49:20); long bot summaries are cut after the
 # markers that make them ignored. It runs with #131's settings, where the
-# limit notice is not an ignored report, so it is the only item.
+# limit notice is not an ignored report, so it is the only item. The notice is
+# posted as another bot (観点 18); 30a runs the fixture with the real author.
+
+# Prints the fixture FILE with the author of Codex's usage-limit notices
+# replaced by $notice_login. The body stays as it really was, so only the
+# author keeps the notice from the default drop (観点 18・30(d)).
+notice_as_other_bot() {
+  jq --arg login "$notice_login" '
+    map(if ((.author.login // "") | sub("\\[bot\\]$"; "")) == "chatgpt-codex-connector"
+           and ((.body // "") | startswith("You have reached your Codex usage limits"))
+        then .author.login = $login else . end)' "$1"
+}
+
 run_131_until() {
   local cutoff="$1"
   local label="$2"
   local want_items="$3"
   local want_state="$4"
+  local real_author="${5:-0}"
+  local fixture="$root/tests/fixtures/review-thread-resolution-131-comments.json"
 
-  jq --arg cutoff "$cutoff" '[.[] | select(.createdAt <= $cutoff)]' \
-    "$root/tests/fixtures/review-thread-resolution-131-comments.json" > "$tmpdir/comments-131.json"
+  if [[ "$real_author" == "1" ]]; then
+    cat "$fixture"
+  else
+    notice_as_other_bot "$fixture"
+  fi | jq --arg cutoff "$cutoff" '[.[] | select(.createdAt <= $cutoff)]' > "$tmpdir/comments-131.json"
   assert_conclusion "$label" "$want_items" "$want_state" \
     TEST_REPOSITORY="j5ik2o/takt-dash" \
     TEST_PR_NUMBER="131" \
@@ -788,12 +816,15 @@ run_131_until "2026-11-16T02:49:20Z" "18d #131 real acknowledgement at 02:49:20 
 # 19. event-store-adapter-java#871 and modern-ddd-book#695 as they really are.
 # The fixtures keep the decisive bodies and timestamps from the live PRs; the
 # long bot summaries are truncated after the markers that make them ignored.
-# Both turn red under the design's second fix (d7e6d5b, "誤って赤にする側"): the
-# only unit that points at the Codex usage-limit notice has no acknowledgement
-# word (`I noted it.` in #871, `対象: <URL>` + `指摘はありません` in #695), and a
-# word in another list item or another heading's section does not reach it.
-# `noted` is not an acknowledgement word (the marshal's decision). Adding
-# 確認しました to a unit that carries the notice's URL turns each green again.
+# As they are, both are green under the design's third fix (06770ed, 観点 19):
+# the only item left is Codex's usage-limit notice, which is now dropped by
+# default. With the notice posted as another bot they are red under the second
+# fix (d7e6d5b, "誤って赤にする側"): the only unit that points at the notice has
+# no acknowledgement word (`I noted it.` in #871, `対象: <URL>` +
+# `指摘はありません` in #695), and a word in another list item or another
+# heading's section does not reach it. `noted` is not an acknowledgement word
+# (the marshal's decision). Adding 確認しました to a unit that carries the
+# notice's URL turns each green again.
 run_871() {
   local label="$1"
   local want_items="$2"
@@ -836,19 +867,25 @@ with_author_reply() {
     '. + [{url: $url, body: $body, createdAt: $created, updatedAt: $created,
            authorAssociation: "OWNER", author: {login: "j5ik2o"}}]' "$fixture"
 }
-run_871 "19a event-store-adapter-java#871: I noted it. does not acknowledge the usage-limit notice" 1 failure
-with_author_reply "$root/tests/fixtures/review-thread-resolution-871-comments.json" \
+run_871 "19a event-store-adapter-java#871 as it is: the Codex usage-limit notice is dropped by default" 0 success
+run_695 "19c modern-ddd-book#695 as it is: the Codex usage-limit notice is dropped by default" 0 success
+notice_as_other_bot "$root/tests/fixtures/review-thread-resolution-871-comments.json" > "$tmpdir/comments-871-other.json"
+notice_as_other_bot "$root/tests/fixtures/review-thread-resolution-695-comments.json" > "$tmpdir/comments-695-other.json"
+run_871 "19e event-store-adapter-java#871 with the notice as another bot: I noted it. does not acknowledge it" 1 failure \
+  "$tmpdir/comments-871-other.json"
+with_author_reply "$tmpdir/comments-871-other.json" \
   "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7300000001" \
   "https://github.com/j5ik2o/event-store-adapter-java/pull/871#issuecomment-7206241589 を確認しました。" \
   "2026-11-28T00:00:00Z" > "$tmpdir/comments-871-acked.json"
-run_871 "19b event-store-adapter-java#871 turns green once the notice's unit says 確認しました" 0 success \
+run_871 "19b event-store-adapter-java#871 (notice as another bot) turns green once the notice's unit says 確認しました" 0 success \
   "$tmpdir/comments-871-acked.json"
-run_695 "19c modern-ddd-book#695: a heading section without a word does not acknowledge the notice" 1 failure
-with_author_reply "$root/tests/fixtures/review-thread-resolution-695-comments.json" \
+run_695 "19f modern-ddd-book#695 with the notice as another bot: a heading section without a word does not acknowledge it" 1 failure \
+  "$tmpdir/comments-695-other.json"
+with_author_reply "$tmpdir/comments-695-other.json" \
   "https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7300000002" \
   "Codex の利用上限の知らせ https://github.com/j5ik2o/modern-ddd-book/pull/695#issuecomment-7183838627 を確認しました。" \
   "2026-11-28T00:00:00Z" > "$tmpdir/comments-695-acked.json"
-run_695 "19d modern-ddd-book#695 turns green once the notice's unit says 確認しました" 0 success \
+run_695 "19d modern-ddd-book#695 (notice as another bot) turns green once the notice's unit says 確認しました" 0 success \
   "$tmpdir/comments-695-acked.json"
 
 # 20. ci_ref keeps v1 as the default and only the explicit v2 selects v2.
@@ -918,31 +955,33 @@ write_fixture "$tmpdir/comments-23a.json" \
   "$(fixture_comment "$pr_url#issuecomment-253" "「$codex_heading」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "23a shared heading quote acknowledges neither item (#443)" 2 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-23a.json"
-# 23b. The same limit notice twice: quoting it acknowledges neither.
+# 23b. The same limit notice twice: quoting it acknowledges neither. The
+# notices are posted by a bot whose notices are not dropped by default
+# (観点 23; Codex's own are, see 30).
 write_fixture "$tmpdir/comments-23b.json" \
-  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
-  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" "$notice_login")" \
+  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-255" "Codex の「$limit_body」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "23b duplicated limit notice quote acknowledges neither (#443)" 2 failure \
   GH_COMMENTS_FILE="$tmpdir/comments-23b.json"
 # 23c. Pasting each notice's URL acknowledges both.
 write_fixture "$tmpdir/comments-23c.json" \
-  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
-  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" "$notice_login")" \
+  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-256" "$pr_url#issuecomment-154 と $pr_url#issuecomment-155 を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "23c duplicated notices acknowledged by their URLs" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-23c.json"
 # 23d. With a single notice, the same quote acknowledges it.
 write_fixture "$tmpdir/comments-23d.json" \
-  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-255" "Codex の「$limit_body」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "23d single limit notice quote acknowledges" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-23d.json"
 # 23e. A fragment shared with an item that is already acknowledged still does
 # not count (the other items are all items, acknowledged or not).
 write_fixture "$tmpdir/comments-23e.json" \
-  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
-  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-154" "$limit_body" "2026-06-02T00:00:00Z" "" "$notice_login")" \
+  "$(fixture_comment "$pr_url#issuecomment-155" "$limit_body" "2026-06-02T00:05:00Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-256" "#issuecomment-154 を確認しました。" "2026-06-02T00:10:00Z" "" alice)" \
   "$(fixture_comment "$pr_url#issuecomment-257" "Codex の「$limit_body」を確認しました。" "2026-06-02T00:11:00Z" "" alice)"
 assert_conclusion "23e quote shared with an acknowledged item still does not count" 1 failure \
@@ -951,8 +990,8 @@ assert_conclusion "23e quote shared with an acknowledged item still does not cou
 # 24. One acknowledgement can approve several items when it lists one unique
 # value per item: anchors, or a fragment only that item has.
 write_fixture "$tmpdir/comments-24a.json" \
-  "$(fixture_comment "$pr_url#issuecomment-10" "$limit_body" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
-  "$(fixture_comment "$pr_url#issuecomment-11" "$limit_body" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-10" "$limit_body" "2026-06-02T00:00:00Z" "" "$notice_login")" \
+  "$(fixture_comment "$pr_url#issuecomment-11" "$limit_body" "2026-06-02T00:05:00Z" "" "$notice_login")" \
   "$(fixture_comment "$pr_url#issuecomment-258" $'次の 2 件を確認しました。\n- #issuecomment-10\n- #issuecomment-11' "2026-06-02T00:10:00Z" "" alice)"
 assert_conclusion "24a one acknowledgement listing two anchors" 0 success \
   GH_COMMENTS_FILE="$tmpdir/comments-24a.json"
@@ -976,8 +1015,10 @@ assert_conclusion "24b one acknowledgement listing two unique fragments" 0 succe
 # PR has the three items of the table: #issuecomment-10 (`Once this is fixed,
 # please rerun the integration tests.`), #issuecomment-11 (`Action not
 # completed / Review rate limited`) and #issuecomment-108 (`You have reached
-# your Codex usage limits for code reviews.`). One author reply follows, and
-# the case checks which items it approves (not only how many).
+# your Codex usage limits for code reviews.`, posted by another bot so the
+# third fix's default drop does not remove it: the note on the design's
+# table). One author reply follows, and the case checks which items it
+# approves (not only how many).
 # ---------------------------------------------------------------------------
 
 scope_item_10="Once this is fixed, please rerun the integration tests."
@@ -993,7 +1034,7 @@ assert_acked() {
   write_fixture "$file" \
     "$(fixture_comment "$pr_url#issuecomment-10" "$scope_item_10" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
     "$(fixture_comment "$pr_url#issuecomment-11" "$scope_item_11" "2026-06-02T00:01:00Z" "" reviewer-bot)" \
-    "$(fixture_comment "$pr_url#issuecomment-108" "$limit_body" "2026-06-02T00:02:00Z" "" chatgpt-codex-connector)" \
+    "$(fixture_comment "$pr_url#issuecomment-108" "$limit_body" "2026-06-02T00:02:00Z" "" "$notice_login")" \
     "$(fixture_comment "$pr_url#issuecomment-900" "$body" "2026-06-02T00:10:00Z" "" alice)"
 
   local want_left=() id
@@ -1162,6 +1203,239 @@ assert_acked "29 pair: 確認済みです approves 108" "108" $'#issuecomment-10
 assert_acked "29 pair: 確認済みではありません does not" "" $'#issuecomment-108 は確認済みではありません。'
 assert_acked "29 pair: has been fixed approves 10" "10" $'#issuecomment-10 has been fixed.'
 assert_acked "29 pair: has not been fixed does not" "" $'#issuecomment-10 has not been fixed.'
+
+# ---------------------------------------------------------------------------
+# 30-33. The third fix of the design (06770ed, "Codex の利用上限の通知を既定で
+# 外す", "jq の版と、位置に頼らない判定", "赤のときの案内" and the scheme-less
+# host rule). The rows of the design's 30〜33 table are fixed here as cases.
+# ---------------------------------------------------------------------------
+
+codex_notice="You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage)."
+codex_notice_short="You have reached your Codex usage limits. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage)."
+
+# assert_left LABEL "LEFT ISSUE-COMMENT NUMBERS" COMMENTS_FILE [ENV=VALUE...]
+# Checks which items stay unacknowledged (not only how many), and that the
+# state is failure when some stay and success when none do.
+assert_left() {
+  local label="$1"
+  local want="$2"
+  local file="$3"
+  shift 3
+
+  local want_state=success status=0 got state
+  [[ -z "$want" ]] || want_state=failure
+  reset_logs
+  ( export GH_COMMENTS_FILE="$file" "$@"; run_script issue_comment true ) > "$tmpdir/out.log" 2>&1 || status=$?
+  got="$(sed -n 's/^- by .*#issuecomment-\([0-9][0-9]*\)$/\1/p' "$tmpdir/summary.md" 2>/dev/null | sort -n | paste -sd' ' - || true)"
+  state="$(grep -o '"state":"[a-z]*"' "$tmpdir/status-payloads.log" 2>/dev/null | tail -1 | sed 's/.*"state":"//; s/"$//' || true)"
+
+  if [[ "$status" -ne 0 || "$got" != "$want" || "$state" != "$want_state" ]]; then
+    smoke_failures=$((smoke_failures + 1))
+    printf 'not ok - %s (want left [%s] / %s; got left [%s] / %s; exit %s)\n' \
+      "$label" "$want" "$want_state" "$got" "${state:-?}" "$status" >&2
+    sed 's/^/    /' "$tmpdir/out.log" >&2 2>/dev/null || true
+  else
+    printf 'ok - %s\n' "$label"
+  fi
+}
+
+# 30. Codex's usage-limit notice is dropped by default only when both the
+# author (chatgpt-codex-connector, with or without [bot]) and the head of the
+# body as fetched (`You have reached your Codex usage limits`) match.
+# (a) Both real wordings (event-store-adapter-kotlin#926 has both), with the
+# GraphQL login and with the REST login.
+write_fixture "$tmpdir/comments-30a.json" \
+  "$(fixture_comment "$pr_url#issuecomment-301" "$codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-302" "$codex_notice_short" "2026-06-02T00:01:00Z" "" chatgpt-codex-connector)"
+assert_left "30a Codex usage-limit notices (both wordings) are dropped by default" "" \
+  "$tmpdir/comments-30a.json"
+write_fixture "$tmpdir/comments-30a2.json" \
+  "$(fixture_comment "$pr_url#issuecomment-303" "$codex_notice" "2026-06-02T00:00:00Z" "" "chatgpt-codex-connector[bot]")" \
+  "$(fixture_comment "$pr_url#issuecomment-304" "$codex_notice_short" "2026-06-02T00:01:00Z" "" "chatgpt-codex-connector[bot]")"
+assert_left "30a' the REST login chatgpt-codex-connector[bot] is the same author" "" \
+  "$tmpdir/comments-30a2.json"
+# #131 as it really was (the real author): the notice is its only item, so the
+# gate is green from the start (観点 18).
+run_131_until "2026-11-16T02:48:59Z" "30a #131 with the real notice author is green before any acknowledgement" 0 success 1
+# (b) A real Codex review is not a notice (author only).
+write_fixture "$tmpdir/comments-30b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-305" "P1: The retry path drops the last event when the cursor wraps." "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
+assert_left "30b a real Codex review stays an item" "305" "$tmpdir/comments-30b.json"
+# (c) A Codex comment that has the notice's sentence mid-body stays an item.
+write_fixture "$tmpdir/comments-30c.json" \
+  "$(fixture_comment "$pr_url#issuecomment-306" $'Summary of this round.\n'"$limit_body"$'\nP2: rename x.' "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
+assert_left "30c a Codex comment with the notice mid-body stays an item" "306" "$tmpdir/comments-30c.json"
+# (d) Another author's comment that starts with the notice (body only).
+write_fixture "$tmpdir/comments-30d.json" \
+  "$(fixture_comment "$pr_url#issuecomment-307" "$codex_notice" "2026-06-02T00:00:00Z" "" reviewer-bot)"
+assert_left "30d another author's copy of the notice stays an item" "307" "$tmpdir/comments-30d.json"
+# (e) The head is matched on the body as fetched: a newline, a space, an HTML
+# comment or a > before it, or other letter cases, keep the comment an item.
+lower_notice="$(printf '%s' "$codex_notice" | tr '[:upper:]' '[:lower:]')"
+write_fixture "$tmpdir/comments-30e.json" \
+  "$(fixture_comment "$pr_url#issuecomment-308" $'\n'"$codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-309" " $codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-310" "$lower_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-311" $'<!-- codex -->\n'"$codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-312" "> $codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
+assert_left "30e a newline, space, HTML comment or > before the head, or lower case, stays an item" \
+  "308 309 310 311 312" "$tmpdir/comments-30e.json"
+# (f) A Codex summary is still dropped by v1's default (unchanged).
+write_fixture "$tmpdir/comments-30f.json" \
+  "$(fixture_comment "$pr_url#issuecomment-313" $'### 💡 Codex Review\nHere are some automated review suggestions' "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
+assert_left "30f a Codex Review summary is dropped by v1's default" "" "$tmpdir/comments-30f.json"
+# (g) A dropped notice does not acknowledge, even when it carries a word and
+# another item's anchor.
+write_fixture "$tmpdir/comments-30g.json" \
+  "$(fixture_comment "$pr_url#issuecomment-1" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-2" "$codex_notice 確認しました #issuecomment-1" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)"
+assert_left "30g a dropped notice with a word and an anchor acknowledges nothing" "1" "$tmpdir/comments-30g.json"
+# (h) The drop is fixed in the judge: overriding the caller's lists does not
+# remove it. The Codex Review summary staying an item shows the override took
+# effect (an empty input falls back to the defaults, so a line that matches
+# nothing stands for "empty").
+write_fixture "$tmpdir/comments-30h.json" \
+  "$(fixture_comment "$pr_url#issuecomment-314" "$codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-315" $'### 💡 Codex Review\nHere are some automated review suggestions' "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
+assert_left "30h overriding the ignore lists does not bring the notice back" "315" "$tmpdir/comments-30h.json" \
+  IGNORED_AUTO_REPORT_PATTERNS="<!-- smoke: matches nothing -->" \
+  IGNORED_AUTO_REPORT_AUTHOR_PATTERNS=$'nobody\t<!-- smoke: matches nothing -->'
+
+# 31. A dropped notice still counts as "another item" when deciding whether a
+# fragment is unique: quoting the notice does not acknowledge a review that
+# quotes the same notice; its URL does.
+write_fixture "$tmpdir/comments-31a.json" \
+  "$(fixture_comment "$pr_url#issuecomment-1" "$codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-2" "> $limit_body"$'\n\nCan you rerun the review later?' "2026-06-02T00:01:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-900" "「$limit_body」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_left "31a quoting a dropped notice does not acknowledge the review that quotes it" "2" "$tmpdir/comments-31a.json"
+write_fixture "$tmpdir/comments-31b.json" \
+  "$(fixture_comment "$pr_url#issuecomment-1" "$codex_notice" "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)" \
+  "$(fixture_comment "$pr_url#issuecomment-2" "> $limit_body"$'\n\nCan you rerun the review later?' "2026-06-02T00:01:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-900" "#issuecomment-2 を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_left "31b the review's anchor acknowledges it" "" "$tmpdir/comments-31b.json"
+
+# 32. jq versions. (a) An ID match must not rely on string positions: jq 1.7
+# and earlier return byte offsets from indices, so after Japanese text the
+# "next character" is misread and #issuecomment-101 acknowledged
+# #issuecomment-10 (a false green). These cases mean the most on jq 1.6 / 1.7
+# (tests/review-thread-resolution-smoke-jq.sh runs them there).
+write_fixture "$tmpdir/comments-32x.json" \
+  "$(fixture_comment "$pr_url#issuecomment-10" "P1: the retry path drops the last event." "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-900" "確認しました #issuecomment-101" "2026-06-02T00:10:00Z" "" alice)"
+assert_left "32x 確認しました #issuecomment-101 does not acknowledge #issuecomment-10" "10" "$tmpdir/comments-32x.json"
+write_fixture "$tmpdir/comments-32y.json" \
+  "$(fixture_comment "$pr_url#issuecomment-10" "P1: the retry path drops the last event." "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-900" "確認しました #issuecomment-10。" "2026-06-02T00:10:00Z" "" alice)"
+assert_left "32y 確認しました #issuecomment-10。 acknowledges it" "" "$tmpdir/comments-32y.json"
+write_fixture "$tmpdir/comments-32z.json" \
+  "$(fixture_comment "$pr_url#issuecomment-10" "P1: the retry path drops the last event." "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-900" "確認しました #issuecomment-1" "2026-06-02T00:10:00Z" "" alice)"
+assert_left "32z 確認しました #issuecomment-1 does not acknowledge #issuecomment-10" "10" "$tmpdir/comments-32z.json"
+# The other places that take positions (match offsets, slices, explode) count
+# code points: Japanese text before an English negation, an inline code span,
+# a まだ statement or an item's copied text in the same clause.
+assert_acked "32 Japanese before has not been fixed" "" \
+  $'前置き #issuecomment-10 has not been fixed'
+assert_acked "32 Japanese before has been fixed acknowledges" "10" \
+  $'前置き #issuecomment-10 has been fixed'
+assert_acked "32 Japanese before an inline code fixed" "" \
+  $'前置き `fixed` #issuecomment-10'
+assert_acked "32 Japanese before はまだです" "" \
+  $'日本語の説明のあと #issuecomment-10 はまだです'
+assert_acked "32 Japanese before an item's copied text with not" "11" \
+  $'日本語の前置き Action not completed / Review rate limited を確認しました'
+
+# (b) The judge checks the jq version first. jq-1.6, an empty version and one
+# it cannot read fail the run and publish only error; jq-1.7 and later go on
+# to the judgement. A fake jq answers --version and passes the rest on.
+mkdir -p "$tmpdir/fake-jq"
+cat > "$tmpdir/fake-jq/jq" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  [[ -z "$FAKE_JQ_VERSION" ]] || printf '%s\n' "$FAKE_JQ_VERSION"
+  exit 0
+fi
+# Drop this directory from PATH first, so a version-manager shim that looks
+# jq up on PATH again does not come back here.
+PATH="${PATH//$FAKE_JQ_DIR:/}" exec jq "$@"
+EOF
+chmod +x "$tmpdir/fake-jq/jq"
+assert_jq_version() {
+  local version="$1"
+  local want="$2"
+  local status=0 states
+  reset_logs
+  ( export PATH="$tmpdir/fake-jq:$PATH" FAKE_JQ_DIR="$tmpdir/fake-jq" FAKE_JQ_VERSION="$version" \
+      GH_COMMENTS_FILE="$tmpdir/comments-03.json"
+    run_script issue_comment true ) > "$tmpdir/out.log" 2>&1 || status=$?
+  states="$(grep -o '"state":"[a-z]*"' "$tmpdir/status-payloads.log" 2>/dev/null | sed 's/.*"state":"//; s/"$//' | paste -sd' ' - || true)"
+  if { [[ "$want" == "error" ]] && [[ "$status" -eq 1 && "$states" == "error" ]] && grep -q '::error::.*jq' "$tmpdir/out.log"; } \
+    || { [[ "$want" == "success" ]] && [[ "$status" -eq 0 && "$states" == "success" ]]; }; then
+    printf 'ok - 32b jq --version %s: %s\n' "'$version'" "$want"
+  else
+    smoke_failures=$((smoke_failures + 1))
+    printf 'not ok - 32b jq --version %s: want %s (got states [%s], exit %s)\n' "'$version'" "$want" "$states" "$status" >&2
+    sed 's/^/    /' "$tmpdir/out.log" >&2 2>/dev/null || true
+  fi
+}
+assert_jq_version "jq-1.6" error
+assert_jq_version "" error
+assert_jq_version "jq version 1.7" error
+assert_jq_version "jq-1.7" success
+assert_jq_version "jq-1.7.1" success
+assert_jq_version "jq-1.8.2" success
+
+# 33. A host/path without a scheme is removed before fragments are matched,
+# unless its last label is a file extension (node.js/lib stays). Removed
+# hosts cannot acknowledge an item by sharing their head.
+assert_host_case() {
+  local label="$1"
+  local want="$2"
+  local item="$3"
+  local ack="$4"
+  write_fixture "$tmpdir/comments-33.json" \
+    "$(fixture_comment "$pr_url#issuecomment-33" "$item" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+    "$(fixture_comment "$pr_url#issuecomment-900" "$ack" "2026-06-02T00:10:00Z" "" alice)"
+  assert_left "$label" "$want" "$tmpdir/comments-33.json"
+}
+assert_host_case "33a github.com/j5ik2o/ci/… is removed" "33" \
+  "See github.com/j5ik2o/ci/blob/main/README.md for the gate." \
+  "別件の github.com/j5ik2o/ci/pull/43 を確認しました"
+assert_host_case "33a' docs.rs/… is removed (rs is a country domain)" "33" \
+  "See docs.rs/serde/latest/serde/de/index.html for this." \
+  "別件の docs.rs/serde/latest/serde/ser/index.html を確認しました"
+assert_host_case "33a'' whois.nic.java/… is removed (java is a gTLD)" "33" \
+  "See whois.nic.java/reference/first for the details." \
+  "別件の whois.nic.java/reference/second を確認しました"
+assert_host_case "33b node.js/lib/… stays and its quote acknowledges" "" \
+  "The loader in node.js/lib/internal/modules/cjs/loader.js is slow." \
+  "node.js/lib/internal/modules/cjs/loader.js を確認しました。"
+assert_host_case "33c scripts/….sh stays and its quote acknowledges" "" \
+  "scripts/review-thread-resolution.sh and src/main.rs disagree." \
+  "scripts/review-thread-resolution.sh を確認しました。"
+assert_host_case "33c src/main.rs stays and its quote acknowledges" "" \
+  "scripts/review-thread-resolution.sh and src/main.rs disagree." \
+  "src/main.rs disagree を確認しました。"
+
+# The guidance on red ("赤のときの案内"): for notices that repeat the same
+# text, paste each notice's URL (anchor) with a word on the same line. The
+# Codex usage-limit notice needs no guidance any more (dropped by default).
+write_fixture "$tmpdir/comments-guide.json" \
+  "$(fixture_comment "$pr_url#issuecomment-1001" "$limit_body" "2026-06-02T00:00:00Z" "" "$notice_login")" \
+  "$(fixture_comment "$pr_url#issuecomment-1002" "$limit_body" "2026-06-02T00:05:00Z" "" "$notice_login")" \
+  "$(fixture_comment "$pr_url#issuecomment-1003" "「$limit_body」を確認しました。" "2026-06-02T00:10:00Z" "" alice)"
+assert_left "guide: duplicated notices stay red when quoted" "1001 1002" "$tmpdir/comments-guide.json"
+if grep -qF '同じ文が並ぶ自動の通知' "$tmpdir/summary.md" \
+  && grep -qF '通知ごとに URL（アンカー）を貼り、同じ行に確認の語を添えてください' "$tmpdir/summary.md" \
+  && grep -qE '#issuecomment-[0-9]+ を確認しました' "$tmpdir/summary.md" \
+  && ! grep -qF 'Codex の利用上限' "$tmpdir/summary.md"; then
+  printf 'ok - guide: red summary shows the URL-and-word form for repeated notices\n'
+else
+  smoke_failures=$((smoke_failures + 1))
+  printf 'not ok - guide: red summary shows the URL-and-word form for repeated notices\n' >&2
+  sed 's/^/    /' "$tmpdir/summary.md" >&2 2>/dev/null || true
+fi
 
 if [[ "$smoke_failures" -gt 0 ]]; then
   echo "$smoke_failures issue #134 smoke expectation(s) failed." >&2

@@ -437,17 +437,31 @@ fetch_top_level_comments() {
   jq -c -s 'add // []' "$pages_file" || return 1
 }
 
+require_jq_17() {
+  local v
+  v="$(jq --version 2>/dev/null || true)"
+  if [[ ! "$v" =~ ^jq-([0-9]+)\.([0-9]+) ]]; then
+    echo "::error::jq の版を読めません（'${v}'）。jq 1.7 以上が要ります。" >&2
+    return 1
+  fi
+  if (( BASH_REMATCH[1] < 1 || (BASH_REMATCH[1] == 1 && BASH_REMATCH[2] < 7) )); then
+    echo "::error::jq ${v#jq-} では判定できません。jq 1.7 以上が要ります。" >&2
+    return 1
+  fi
+}
+
 filter_unacknowledged_comments() {
   local comments="$1"
   local pr_author="$2"
   local pr_author_type="$3"
 
+  require_jq_17 || return 1
+
   jq -c \
     --arg pr_author "$pr_author" \
     --arg pr_author_type "$pr_author_type" \
     --arg ignored_auto_report_patterns "$IGNORED_AUTO_REPORT_PATTERNS" \
-    --arg ignored_auto_report_author_patterns "$IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" '
-def ack_words:
+    --arg ignored_auto_report_author_patterns "$IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" 'def ack_words:
   "確認しました|確認いたしました|確認済み|承知しました|了解しました|対応しました|対応いたしました|対応済み|対処しました|修正しました|直しました|\\backnowledged\\b|\\baddressed\\b|\\bfixed\\b";
 
 # Codex の承知の語彙。v1 と同じ狭い一覧だけを使う（条件 4 の ack_words は使わない）。
@@ -509,10 +523,16 @@ def raw_body:
 
 # URL は id の照合にだけ使う。断片の照合の前に両方の本文から外す（ci#44）。
 # 外さないと `https://github.com/j` のような URL の共通の頭が 20 文字の窓として当たる。
+# scheme の無い `ホスト名/パス` は、最後のラベルがファイルの拡張子（`js`・`ts`・`json` など）なら外さない
+# （`node.js/lib` を残す。3 回目の直し）。一覧に無い名前はホスト名として外す（外し過ぎは赤の側）。
+# `rs`・`sh`・`md`・`py` は実在の国別ドメイン（`docs.rs`・`lib.rs`・`bun.sh`）、`java` は実在の gTLD なので一覧に入れない。
+def file_ext_labels:
+  "js|mjs|cjs|jsx|ts|tsx|json|ya?ml|toml|lock|txt|kts?|scala|sbt|qnt|html?|css|go";
+
 def strip_urls($body):
   ($body // "")
   | gsub("(?i)https?://[^\\s)>\\]]+"; " ")
-  | gsub("(?i)(?<pre>^|[^a-z0-9_./-])(?:[a-z0-9-]+\\.)+[a-z]{2,}/[^\\s)>\\]]*"; "\(.pre) ");
+  | gsub("(?i)(?<pre>^|[^a-z0-9_./-])(?:[a-z0-9-]+\\.)+(?!(?:" + file_ext_labels + ")/)[a-z]{2,}/[^\\s)>\\]]*"; "\(.pre) ");
 
 def quote_text($c):
   norm_text(strip_urls($c.body));
@@ -524,12 +544,14 @@ def anchor($u):
   ($u // "" | split("#") | if length > 1 then "#" + .[-1] else "" end);
 
 # id の完全一致。直後に数字が続く一致は数えない（#issuecomment-10 は #issuecomment-101 に当たらない）。
+# 位置（indices）を使わず、正規表現の先読みで決める（3 回目の直し）。jq 1.7 までの indices はバイト位置を返し、
+# 日本語の後ろで「直後の 1 文字」を取り違えて偽の緑になる（「jq の版と、位置に頼らない判定」）。
+def re_escape:
+  gsub("(?<c>[.^$|?*+()\\[\\]{}\\\\])"; "\\\(.c)");
+
 def id_match($raw; $needle):
   $needle != ""
-  and any(($raw | indices($needle))[];
-          . as $i
-          | (($raw[$i + ($needle | length):$i + ($needle | length) + 1] // "")
-             | test("^[0-9]$") | not));
+  and ($raw | test(($needle | re_escape) + "(?![0-9])"));
 
 # ---- 確認の語の効く範囲・引用・否定（2026-11-28 の 2 回目の直し。ci#43 の残る穴 4 つ） ----
 
@@ -623,7 +645,7 @@ def backtick_runs($cs):
   | [ range(0; $len) as $i
       | select($cs[$i] == 96 and ($i == 0 or $cs[$i - 1] != 96))
       | { start: $i,
-          len: ([ range($i; $len) as $k | select($cs[$k] != 96) | $k ] | first // $len) - $i } ];
+          len: (([ range($i; $len) as $k | select($cs[$k] != 96) | $k ] | first // $len) - $i) } ];
 
 def clauses($cover):
   explode as $cs
@@ -704,29 +726,32 @@ def pending_hits($s):
 # 語・打ち消し・まだの表明は masked（引用・インラインのコード・項目の写しを空白にしたもの）で見る。
 def polarity:
   (.masked | ascii_downcase) as $s
-  | ($s | test("(" + ack_words + ")")) as $has
-  | (if $has then
-       ( ($s | test("(未|まだ|未だに?|\\bnot\\b|\\bnot\\s+yet\\b|\\bun-?)[\\s*_~]*(" + ack_words + ")"))
-         or ($s | test("(\\b(not|never|cannot|no longer|unless|until|if|once|whether|will|going to)\\b|n['\''’]t\\b|['\''’]ll\\b)[\\s\\S]*?(" + en_ack_words + ")"))
-         or ($s | test("(" + ack_words + ")[\\s*_~]*((では|じゃ|で)は?\\s*(ありません|ない|なく|なかった)|とは(言え|いえ)(ません|ない))"))
-         or ($s | test("(" + ack_words + ")[\\s*_~]*(です|でした|でしょう)?\\s*か(?!ら)"))
-         or ($s | test("[?？]\\s*$")) )
-     else false end) as $negw
-  | ($s | test("(" + pending_cue + ")(?!\\s*(こと|の|と|旨))")) as $cue
-  | if $negw or $cue then "neg"
-    elif $has then "pos"
+  | [ $s | match("(" + ack_words + ")"; "g") ] as $hits
+  | ([ $hits[] | select(negated2($s; .) | not) ] | length) as $pos
+  | (($hits | length) - $pos) as $negw
+  | (pending_hits($s) | length) as $cue
+  | if $negw > 0 or $cue > 0 then "neg"
+    elif $pos > 0 then "pos"
     else "none" end;
 
+# 節を切る前に、逆接の接続（`ましたが`・`ですが`・`けど`・`ものの`、英語の `but`・`however`・`although`・
+# `whereas`）の位置に改行を入れる。読点の無い `#10 は確認しましたが #11 は未対応です` や
+# `#10 is fixed but #11 is not fixed` を 2 つの節に分ける。参照の照合は元の本文で行う。
 def split_contrast:
   gsub("(?<a>(ました|です|でした|ません)が|けれども|けれど|けど|ものの)(?![、，,])"; "\(.a)\n")
   | gsub("(?i)(?<a>[ \\t])(?<b>but|however|although|whereas)\\b"; "\(.a)\n\(.b)");
 
 # 文字列 $t が指す項目の位置（$its の key）。id か、その項目だけが持つ 20 文字の断片。
-def has_other($texts; $k; $w):
-  ($texts | length) as $n
-  | (first(range(0; $n) | select(. != $k and ($texts[.] | contains($w))) | 1) // null) != null;
+# $excl は既定で外した通知の quote_text。通知は項目にならないが、「ほかの項目」には数える（3 回目の直し）。
+# 外した通知と同じ文を持つ項目（通知を引用したレビューなど）を、通知の引用で承認しないため。
+# 性能のための等価な書き換え：$texts（項目ごとの quote_text）は acked_keys で 1 回だけ計算して渡し、
+# 窓の照合は first で最初に当たったところで打ち切る。
+def has_other($texts; $excl; $k; $w):
+  (($texts | length) as $n
+   | (first(range(0; $n) | select(. != $k and ($texts[.] | contains($w))) | 1) // null) != null)
+  or any($excl[]; contains($w));
 
-def refs_in($t; $its; $texts):
+def refs_in($t; $its; $texts; $excl):
   ($t | ascii_downcase) as $raw
   | (norm_text(strip_urls($t))) as $b
   | ($b | windows(20)) as $ws
@@ -734,9 +759,10 @@ def refs_in($t; $its; $texts):
       | $its[$k] as $it
       | $texts[$k] as $tb
       | select(id_match($raw; (anchor($it.url) | ascii_downcase))
-               or ((first($ws[] | . as $w | select(($tb | contains($w)) and (has_other($texts; $k; $w) | not)) | 1) // null) != null))
+               or ((first($ws[] | . as $w | select(($tb | contains($w)) and (has_other($texts; $excl; $k; $w) | not)) | 1) // null) != null))
       | $k ];
 
+# 打ち消しの節が触れている項目（id か、URL を外した 20 文字の窓が項目の本文にある。一意でなくてよい）。
 def mentions_in($t; $its; $texts):
   ($t | ascii_downcase) as $raw
   | (norm_text(strip_urls($t)) | windows(20)) as $ws
@@ -746,7 +772,8 @@ def mentions_in($t; $its; $texts):
                or ((first($ws[] | . as $w | select($texts[$k] | contains($w)) | 1) // null) != null))
       | $k ];
 
-def acked_keys($its):
+# 確認 $a が承認する項目の位置の集合。
+def acked_keys($its; $excl):
   . as $a
   | [ $its[] | quote_text(.) ] as $texts
   | units as $us
@@ -765,12 +792,12 @@ def acked_keys($its):
   | ([ ($segs[] | .cl[] | select(.pol == "neg") | mentions_in(.raw; $its; $texts)[]),
        ($segs[] | select(.pol == "neg" or .pol == "mixed") | .blocks[] | mentions_in(.; $its; $texts)[]) ] | unique) as $veto
   | [ $segs[]
-      | if .pol == "pos" then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts)[]
-        elif .pol == "mixed" then (.cl[] | select(.pol == "pos") | refs_in(.raw; $its; $texts)[])
+      | if .pol == "pos" then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts; $excl)[]
+        elif .pol == "mixed" then (.cl[] | select(.pol == "pos") | refs_in(.raw; $its; $texts; $excl)[])
         elif .pol == "none" and .type == "item" then
           lead_of($us; .j) as $l
           | if $l != null and $polof[$l | tostring] == "pos"
-            then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts)[] else empty end
+            then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts; $excl)[] else empty end
         else empty end ]
   | unique
   | map(select(. as $k | $veto | index($k) | not));
@@ -803,6 +830,18 @@ def ignored_auto_report:
     or any(ignored_auto_report_author_pattern_list[];
            . as $e | $e.author == $author and ($body | contains($e.pattern)));
 
+# 既定で外す自動の通知（3 回目の直し。元帥の決め 2026-11-28）。作者と本文の頭の両方が一致したときだけ外す。
+# 片方だけの一致は外さない（迷う入力は赤に倒す）。一覧は jq に固定し、呼び出し側の入力では足しも外しもできない。
+# 頭は、取得した本文そのものの先頭で見る（空白・HTML コメント・`>` を飛ばさず、大小文字も区別する）。
+# 既存のパターンの `contains`（本文のどこか）とは当て方が違う。
+def default_ignored_notices:
+  [ { author: "chatgpt-codex-connector", head: "You have reached your Codex usage limits" } ];
+
+def default_ignored_notice:
+  report_author_login as $author
+  | (.body // "") as $body
+  | any(default_ignored_notices[]; . as $n | $n.author == $author and ($body | startswith($n.head)));
+
 # TAKT の失敗報告の種別。本文の語句ではなく、マーカーと著者・本文の形で決める。
 # マーカーはフェンスの外にあるときだけ効く（引用ではフェンスの中に入る）。
 def has_takt_marker:
@@ -819,10 +858,10 @@ def fenced_report_body:
 def takt_report:
   is_author and (has_takt_marker or fenced_report_body);
 
-# 自動報告か。v1 の ignored_auto_report（著者＋本文パターン）に、
-# TAKT の失敗報告の種別を足す。既存の項目の選び方は変えない。
+# 自動報告か。v1 の ignored_auto_report（著者＋本文パターン）に、既定で外す通知と
+# TAKT の失敗報告の種別を足す。それ以外の項目の選び方は変えない。
 def is_auto_report:
-  ignored_auto_report or takt_report;
+  ignored_auto_report or default_ignored_notice or takt_report;
 
 # Codex の承知。v1 と同じく文頭一致だけを見る。語彙も v1 と同じ trusted_ack_words だけ。
 # 本文の途中の `fixed` も、文頭の `Fixed` も承知にしない（Codex の要約を項目から消さない）。
@@ -860,7 +899,8 @@ def is_acknowledger:
 | ($all | map(select(is_auto_report))) as $reports
 | ($all - $reports) as $candidates
 | ($candidates | map(select(is_item))) as $its
-| [ $candidates[] | select(is_acknowledger) | {at: .createdAt, keys: acked_keys($its)} ] as $acks
+| ($reports | map(select(default_ignored_notice) | quote_text(.))) as $excl
+| [ $candidates[] | select(is_acknowledger) | {at: .createdAt, keys: acked_keys($its; $excl)} ] as $acks
 | [ range(0; $its | length) as $k
     | $its[$k] as $item
     | select([ $acks[]
@@ -868,7 +908,7 @@ def is_acknowledger:
                | select(.keys | index($k) != null) ] | length == 0)
     | $item
   ]
-  ' <<< "$comments"
+' <<< "$comments"
 }
 
 build_summary() {
@@ -892,7 +932,12 @@ build_summary() {
     if [[ "$unacknowledged_count" -gt 0 ]]; then
       echo "### Unacknowledged top-level PR comments or review summaries"
       echo
-      jq -r '.[] | "- by \(.author.login // "unknown") updated at \((.updatedAt // .createdAt)): \(.url // "no comment URL")\n  確認するには、返信にこの URL を含めるか、本文を 20 文字以上引用し、\n  「確認しました」などの語を添えてください（URL は長さを問いません）。\n  引用はコードフェンスで囲んでもかまいません。"' <<< "$unacknowledged"
+      jq -r '.[] | "- by \(.author.login // "unknown") updated at \((.updatedAt // .createdAt)): \(.url // "no comment URL")\n  確認するには、返信にこの URL を含めるか、本文を 20 文字以上引用し、\n  「確認しました」などの語を添えてください（URL は長さを問いません）。\n  引用はコードフェンスで囲んでもかまいません。\n  ほかの項目にもある文（定型文）と、URL の一部は引用として数えません。\n  確認の語は、URL・引用と同じ段落かリストの項目に書いてください。\n  引用（行頭の >、「」）の中の語と、「未対応です」「not been fixed」\n  「確認済みではありません」のような打ち消しは確認として数えません。"' <<< "$unacknowledged"
+      echo
+      echo "同じ文が並ぶ自動の通知（レート制限の通知が 2 回など）は、引用ではどれも確認になりません。"
+      echo "通知ごとに URL（アンカー）を貼り、同じ行に確認の語を添えてください。"
+      echo "  例: - https://github.com/o/r/pull/1#issuecomment-1001 を確認しました。"
+      echo "      - https://github.com/o/r/pull/1#issuecomment-1002 を確認しました。"
       echo
       echo "自動投稿（TAKT の失敗報告など）は確認として数えません。"
     fi

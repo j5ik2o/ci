@@ -1285,11 +1285,19 @@ write_fixture "$tmpdir/comments-30f.json" \
   "$(fixture_comment "$pr_url#issuecomment-313" $'### 💡 Codex Review\nHere are some automated review suggestions' "2026-06-02T00:00:00Z" "" chatgpt-codex-connector)"
 assert_left "30f a Codex Review summary is dropped by v1's default" "" "$tmpdir/comments-30f.json"
 # (g) A dropped notice does not acknowledge, even when it carries a word and
-# another item's anchor.
+# another item's anchor. The PR is opened by the Codex login here, so the
+# notice would be a valid acknowledgement if only the item list dropped it;
+# the same login's reply without the notice's head does acknowledge.
 write_fixture "$tmpdir/comments-30g.json" \
   "$(fixture_comment "$pr_url#issuecomment-1" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
   "$(fixture_comment "$pr_url#issuecomment-2" "$codex_notice 確認しました #issuecomment-1" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)"
-assert_left "30g a dropped notice with a word and an anchor acknowledges nothing" "1" "$tmpdir/comments-30g.json"
+assert_left "30g a dropped notice with a word and an anchor acknowledges nothing" "1" "$tmpdir/comments-30g.json" \
+  GH_PR_AUTHOR="chatgpt-codex-connector"
+write_fixture "$tmpdir/comments-30g2.json" \
+  "$(fixture_comment "$pr_url#issuecomment-1" "$item_body" "2026-06-02T00:00:00Z" "" reviewer-bot)" \
+  "$(fixture_comment "$pr_url#issuecomment-2" "確認しました #issuecomment-1" "2026-06-02T00:05:00Z" "" chatgpt-codex-connector)"
+assert_left "30g' the same login's reply without the notice's head acknowledges" "" "$tmpdir/comments-30g2.json" \
+  GH_PR_AUTHOR="chatgpt-codex-connector"
 # (h) The drop is fixed in the judge: overriding the caller's lists does not
 # remove it. The Codex Review summary staying an item shows the override took
 # effect (an empty input falls back to the defaults, so a line that matches

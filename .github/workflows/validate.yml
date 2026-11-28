@@ -26,5 +26,9 @@ jobs:
           node-version: 24
       - name: Validate workflow YAML, shell syntax, and wrapper tests
         run: bash scripts/validate-workflows.sh
-      - name: Review-thread smoke tests
-        run: bash tests/review-thread-resolution-smoke.sh
+      - name: Review-thread smoke tests (runner jq)
+        run: |
+          jq --version
+          bash tests/review-thread-resolution-smoke.sh
+      - name: Review-thread smoke tests (jq 1.7)
+        run: bash tests/review-thread-resolution-smoke-jq.sh 1.7

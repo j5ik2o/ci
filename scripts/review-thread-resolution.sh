@@ -447,167 +447,427 @@ filter_unacknowledged_comments() {
     --arg pr_author_type "$pr_author_type" \
     --arg ignored_auto_report_patterns "$IGNORED_AUTO_REPORT_PATTERNS" \
     --arg ignored_auto_report_author_patterns "$IGNORED_AUTO_REPORT_AUTHOR_PATTERNS" '
-    def report_author_login:
-      (.author.login // "") | sub("\\[bot\\]$"; "");
-    def ignored_auto_report_pattern_list:
-      $ignored_auto_report_patterns
-      | split("\n")
-      | map(select(length > 0));
-    def ignored_auto_report_author_pattern_list:
-      $ignored_auto_report_author_patterns
-      | split("\n")
-      | map(select(length > 0))
-      | map(split("\t") as $parts | select($parts | length >= 2) | {
-          author: $parts[0],
-          pattern: ($parts[1:] | join("\t"))
-        });
-    def body_matches_ignored_auto_report_pattern($body):
-      any(ignored_auto_report_pattern_list[]; . as $pattern | $body | contains($pattern));
-    def body_matches_ignored_auto_report_author_pattern($author; $body):
-      any(ignored_auto_report_author_pattern_list[]; . as $entry | $entry.author == $author and ($body | contains($entry.pattern)));
-    def ignored_auto_report:
-      report_author_login as $author
-      | (.body // "") as $body
-      | body_matches_ignored_auto_report_pattern($body)
-        or body_matches_ignored_auto_report_author_pattern($author; $body);
-    # --- Code fences -------------------------------------------------------
-    # One shared fence parser for the acknowledgement-word check, the TAKT
-    # marker check and the auto-report check. A fence opens on a line whose
-    # first non-space characters are a run of at least three backticks or
-    # tildes, and closes on a line that is only a run of the same character
-    # at least as long. A fence that never closes is not a fence at all, so
-    # its lines stay ordinary text.
-    def fence_open:
-      (sub("^\\s+"; "") ) as $t
-      | (($t | match("^(`{3,}|~{3,})")) // null) as $m
-      | if $m == null then null
-        else {char: $m.string[0:1], len: ($m.string | length)} end;
-    def fence_close($fence):
-      (sub("^\\s+"; "") | sub("\\s+$"; "")) as $t
-      | (($t | match("^(`+|~+)$")) // null) as $m
-      | $m != null and $m.string[0:1] == $fence.char and ($m.string | length) >= $fence.len;
-    def fence_flags:
-      ((. // "") | split("\n")) as $lines
-      | (reduce range(0; $lines | length) as $i
-          ({in_fence: null, start: null, flags: []};
-           ($lines[$i]) as $line
-           | if .in_fence == null then
-               ($line | fence_open) as $f
-               | if $f == null then .flags += [false]
-                 else .in_fence = $f | .start = $i | .flags += [true] end
-             else
-               .flags += [true]
-               | .in_fence as $f
-               | if ($line | fence_close($f))
-                 then .in_fence = null | .start = null else . end
-             end)) as $st
-      | if $st.in_fence != null then
-          [range(0; $st.flags | length) as $i
-           | if $i >= $st.start then false else $st.flags[$i] end]
-        else $st.flags end;
-    def strip_fences:
-      ((. // "") | split("\n")) as $lines
-      | (fence_flags) as $flags
-      | [range(0; $lines | length) as $i | select($flags[$i] | not) | $lines[$i]]
-      | join("\n");
-    # --- TAKT auto reports ---------------------------------------------------
-    def is_author:
-      (.author.login // "") == $pr_author;
-    def has_takt_marker:
-      ((.body // "") | strip_fences) | test("<!--\\s*takt:auto-report\\s*-->");
-    def fenced_report_body:
-      ((.body // "") | strip_fences) | test("^\\s*$");
-    def takt_report:
-      is_author and (has_takt_marker or fenced_report_body);
-    def is_auto_report:
-      ignored_auto_report or takt_report;
-    # --- Acknowledgement words ------------------------------------------------
-    def ack_words:
-      "確認しました|確認いたしました|確認済み|承知しました|了解しました|対応しました|対応いたしました|対応済み|対処しました|修正しました|直しました|\\backnowledged\\b|\\baddressed\\b|\\bfixed\\b";
-    def trusted_ack_words:
-      "acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました";
-    def negated($s; $m):
-      ($s[([0, ($m.offset - 12)] | max):$m.offset]
-       | test("(?i)(未|まだ|未だに?|\\bnot\\b|\\bnot\\s+yet\\b|\\bun-?)\\s*$"))
-      or ($s[($m.offset + ($m.string | length)):($m.offset + ($m.string | length) + 3)]
-          | test("^\\s*(か\\s*[?？。]|[?？]|か\\s*$)"));
-    def ack_phrase:
-      ((.body // "") | strip_fences | ascii_downcase) as $s
-      | ([ $s | match("(?i)(" + ack_words + ")"; "g") ]) as $hits
-      | ($hits | length) > 0
-        and ([$hits[] | select(negated($s; .) | not)] | length) > 0;
-    # Codex trusted acknowledgement: v1 narrow vocabulary, matched at the
-    # very start of the raw body (before any fence handling).
-    def trusted_acknowledgement:
-      (report_author_login == "chatgpt-codex-connector")
-      and ((.body // "") | test("(?i)^\\s*(" + trusted_ack_words + ")"));
-    # --- References to the acknowledged item ----------------------------------
-    def norm_text($body):
-      ($body // "")
-      | gsub("(?s)<!--.*?-->"; " ")
-      | split("\n")
-      | map(gsub("^\\s*>\\s?"; ""))
-      | map(gsub("<[^>]+>"; " "))
-      | map(gsub("[*_`#>|]+"; " "))
-      | map(gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; ""))
-      | map(select(length > 0))
-      | join("\n")
-      | ascii_downcase;
-    def windows($n):
-      . as $s | [range(0; (($s | length) - $n + 1)) as $i | $s[$i:$i + $n]];
-    def anchor_of($u):
-      ($u // "" | split("#") | if length > 1 then "#" + .[-1] else "" end);
-    # An ID match must be complete: the character after the match must not
-    # be another digit, so #issuecomment-10 never matches #issuecomment-101.
-    def id_match($raw; $needle):
-      $needle != ""
-      and any(($raw | indices($needle))[];
-              . as $i
-              | (($raw[$i + ($needle | length):$i + ($needle | length) + 1] // "")
-                 | test("^[0-9]$") | not));
-    def references($target; $ack):
-      norm_text($target.body) as $tb
-      | norm_text($ack.body) as $b
-      | (($ack.body // "") | ascii_downcase) as $raw
-      | ((($target.url // "") | ascii_downcase) as $u
-         | id_match($raw; $u)
-           or id_match($raw; (anchor_of($target.url) | ascii_downcase))
-           or ($b | any(windows(20)[]; . as $w | $tb | contains($w))));
-    def is_item:
-      (trusted_acknowledgement | not)
-      and ((.author.login // "") != $pr_author)
-      and (
-        $pr_author_type != "Bot"
-        or (
-          .authorAssociation != "OWNER"
-          and .authorAssociation != "MEMBER"
-          and .authorAssociation != "COLLABORATOR"
-        )
-      );
-    def is_acknowledger:
-      (.author.login // "") == $pr_author
-      or trusted_acknowledgement
-      or (
-        $pr_author_type == "Bot"
-        and (
-          .authorAssociation == "OWNER"
-          or .authorAssociation == "MEMBER"
-          or .authorAssociation == "COLLABORATOR"
-        )
-      );
-    . as $comments
-    | ($comments | map(select(is_auto_report | not))) as $candidates
-    | [
-        $candidates[]
-        | select(is_item)
-        | . as $comment
-        | select([
-            $candidates[]
-            | select(is_acknowledger)
-            | select(.createdAt > ($comment.updatedAt // $comment.createdAt))
-            | select(ack_phrase and references($comment; .))
-          ] | length == 0)
-      ]
+def ack_words:
+  "確認しました|確認いたしました|確認済み|承知しました|了解しました|対応しました|対応いたしました|対応済み|対処しました|修正しました|直しました|\\backnowledged\\b|\\baddressed\\b|\\bfixed\\b";
+
+# Codex の承知の語彙。v1 と同じ狭い一覧だけを使う（条件 4 の ack_words は使わない）。
+# `Fixed`・`確認済み`・`修正しました`・`直しました`・`確認いたしました`・`対応いたしました` は
+# 著者自身の確認（条件 4）でだけ承認に使う。
+def trusted_ack_words:
+  "acknowledged|addressed|確認しました|承知しました|了解しました|対応済み|対応しました|対処しました";
+
+# コードフェンスの境界。確認の語・マーカー・フェンスだけの本文の判定が、この 1 つを共有する。
+# CommonMark と同じく、行頭（空白 3 つまで）のバッククォートかチルダ 3 つ以上で開き、
+# 同じ文字で、開きと同じ長さ以上の行で閉じる。閉じないフェンスは本文の終わりまで続く。
+# 4 つのバッククォートで開いたフェンスは、中の 3 つのバッククォートの行では閉じない。
+def fence_open($line):
+  [ $line | match("^ {0,3}(`{3,}|~{3,})") ]
+  | if length > 0 then .[0].captures[0].string else null end;
+
+def fence_closes($line; $open):
+  ($open[0:1]) as $c
+  | $line | test("^ {0,3}" + (if $c == "`" then "`" else "~" end)
+                 + "{" + ($open | length | tostring) + ",}\\s*$");
+
+def fence_split:
+  reduce ((.body // "") | split("\n"))[] as $line (
+    { open: null, prose: [], fenced: 0 };
+    if .open == null then
+      fence_open($line) as $o
+      | if $o == null then .prose += [$line] else .open = $o | .fenced += 1 end
+    elif fence_closes($line; .open) then .open = null
+    else . end);
+
+# フェンスの外の散文だけ。
+def strip_fences:
+  fence_split | .prose | join("\n");
+
+# 文頭一致。v1 の `^\s*(…)` と同じく、フェンスを外す前の本文の先頭で見る。
+# 先頭のフェンス（ログなど）を外してから見ると、その後ろの `Acknowledged` が文頭扱いになり、
+# 未修正の指摘が続く Codex の要約が項目から消えるため。語彙も v1 と同じ trusted_ack_words だけ。
+def ack_at_start:
+  (.body // "")
+  | ascii_downcase
+  | test("^\\s*(" + trusted_ack_words + ")");
+
+# フェンスは残す（フェンス内の引用も照合の対象）。確認の語は norm_text を通さず、
+# 単位と節（clauses）の masked で見る。
+def norm_text($body):
+  $body
+  | gsub("(?s)<!--.*?-->"; " ")
+  | split("\n")
+  | map(gsub("^\\s*>\\s?"; ""))
+  | map(gsub("<[^>]+>"; " "))
+  | map(gsub("[*_`#>|]+"; " "))
+  | map(gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; ""))
+  | map(select(length > 0))
+  | join("\n")
+  | ascii_downcase;
+
+def raw_body:
+  (.body // "") | ascii_downcase;
+
+# URL は id の照合にだけ使う。断片の照合の前に両方の本文から外す（ci#44）。
+# 外さないと `https://github.com/j` のような URL の共通の頭が 20 文字の窓として当たる。
+def strip_urls($body):
+  ($body // "")
+  | gsub("(?i)https?://[^\\s)>\\]]+"; " ")
+  | gsub("(?i)(?<pre>^|[^a-z0-9_./-])(?:[a-z0-9-]+\\.)+[a-z]{2,}/[^\\s)>\\]]*"; "\(.pre) ");
+
+def quote_text($c):
+  norm_text(strip_urls($c.body));
+
+def windows($n):
+  . as $s | [range(0; (($s | length) - $n + 1)) as $i | $s[$i:$i + $n]];
+
+def anchor($u):
+  ($u // "" | split("#") | if length > 1 then "#" + .[-1] else "" end);
+
+# id の完全一致。直後に数字が続く一致は数えない（#issuecomment-10 は #issuecomment-101 に当たらない）。
+def id_match($raw; $needle):
+  $needle != ""
+  and any(($raw | indices($needle))[];
+          . as $i
+          | (($raw[$i + ($needle | length):$i + ($needle | length) + 1] // "")
+             | test("^[0-9]$") | not));
+
+# ---- 確認の語の効く範囲・引用・否定（2026-11-28 の 2 回目の直し。ci#43 の残る穴 4 つ） ----
+
+# 行の種別。フェンスの境界は fence_split と同じ規則（閉じないフェンスは終わりまで）。
+# fence: フェンスの中（開き・閉じの行を含む。開きの行に start: true）
+# quote: フェンスの外で、行頭（空白 3 つまで）が `>` の行
+# blank / heading / item（リストの項目の頭）/ text
+def line_kinds:
+  reduce ((.body // "") | split("\n"))[] as $line (
+    { open: null, out: [] };
+    if .open == null then
+      fence_open($line) as $o
+      | if $o != null then .open = $o | .out += [{k: "fence", t: $line, start: true}]
+        elif ($line | test("^\\s*$")) then .out += [{k: "blank", t: $line}]
+        elif ($line | test("^ {0,3}>")) then .out += [{k: "quote", t: $line}]
+        elif ($line | test("^ {0,3}#{1,6}(\\s|$)")) then .out += [{k: "heading", t: $line}]
+        elif ($line | test("^\\s*([-*+]|[0-9]+[.)])\\s+")) then .out += [{k: "item", t: $line}]
+        else .out += [{k: "text", t: $line}] end
+    elif fence_closes($line; .open) then .open = null | .out += [{k: "fence", t: $line}]
+    else .out += [{k: "fence", t: $line}] end)
+  | .out;
+
+# 単位の列。散文の単位（para・item・heading）と、引用・フェンスのかたまり（block）。
+# gap: 直前に空行があるか。sec: 見出しで区切った節の番号（見出しの行から新しい節）。
+def units:
+  reduce line_kinds[] as $l (
+    { us: [], gap: false, sec: 0 };
+    (.us | length) as $n
+    | (if $n > 0 then .us[$n - 1] else null end) as $last
+    | (if $l.k == "heading" then .sec += 1 else . end)
+    | if $l.k == "blank" then .gap = true
+      elif $l.k == "text" and $last != null and (.gap | not)
+           and ($last.type == "para" or $last.type == "item") then
+        .us[$n - 1].text += "\n" + $l.t
+      # 空行のあとでも、字下げ（空白 2 つ以上）した文の行はリストの項目の続き（GitHub の表示と同じ）。
+      elif $l.k == "text" and $last != null and $last.type == "item" and ($l.t | test("^ {2,}\\S")) then
+        .us[$n - 1].text += "\n" + $l.t | .gap = false
+      elif $l.k == "quote" and $last != null and (.gap | not) and $last.type == "block" and $last.q then
+        .us[$n - 1].text += "\n" + $l.t
+      elif $l.k == "fence" and ($l.start | not) and $last != null and $last.type == "block" and ($last.q | not) then
+        .us[$n - 1].text += "\n" + $l.t | .gap = false
+      else
+        .us += [{
+          type: (if $l.k == "text" then "para" elif $l.k == "item" then "item"
+                 elif $l.k == "heading" then "heading" else "block" end),
+          q: ($l.k == "quote"),
+          text: $l.t,
+          gap: .gap,
+          sec: .sec
+        }]
+        | .gap = false
+      end)
+  | .us;
+
+# かたまりの付く先（散文の単位の位置）。探すのは同じ見出しの節の中だけ。
+# 1. 空行を挟まずすぐ上にある散文の単位（すぐ上がかたまりなら、その付く先）
+# 2. なければ、下にある最初の para か item
+# 3. なければ、上にある最後の para か item
+# 4. どれも無ければ null（どの単位にも付かない）
+def attach_targets($us):
+  reduce range(0; $us | length) as $j (
+    [];
+    . as $acc
+    | if $us[$j].type != "block" then $acc + [null]
+      elif $j > 0 and ($us[$j].gap | not)
+           and ($us[$j - 1].type == "para" or $us[$j - 1].type == "item") then $acc + [$j - 1]
+      elif $j > 0 and ($us[$j].gap | not) and $us[$j - 1].type == "block" and $acc[$j - 1] != null
+           and $acc[$j - 1] < $j then $acc + [$acc[$j - 1]]
+      else
+        ([range($j + 1; $us | length)
+          | select(($us[.].type == "para" or $us[.].type == "item") and $us[.].sec == $us[$j].sec)] | first) as $next
+        | ([range(0; $j)
+          | select(($us[.].type == "para" or $us[.].type == "item") and $us[.].sec == $us[$j].sec)] | last) as $prev
+        | $acc + [($next // $prev)]
+      end);
+
+# リストの項目の前置き：項目の並び（間の空行とかたまりは許す）のすぐ上の para。
+def lead_of($us; $j):
+  [ range($j - 1; -1; -1) as $k | $us[$k] | {k: $k, type} ]
+  | (map(select(.type != "item" and .type != "block")) | first) as $p
+  | if $p != null and $p.type == "para" then $p.k else null end;
+
+# 節に分ける。句点・感嘆符・疑問符・読点・セミコロン・改行と、空白か終わりが続くピリオドで切る。
+# 「」『』“”（）() の中と、インラインのコードの中では切らない。
+# raw: 照合に使う元の文字列。masked: 確認の語を探す文字列（「」『』“” の中身、インラインのコード、
+# $cover が印を付けた項目の写しを空白にする）。
+# インラインのコードは CommonMark と同じく、同じ長さのバッククォートの列で開いて閉じる
+# （``fixed`` も 2 つの列で囲んだコード）。閉じる列が無い列は、ただの文字として扱う。
+def backtick_runs($cs):
+  ($cs | length) as $len
+  | [ range(0; $len) as $i
+      | select($cs[$i] == 96 and ($i == 0 or $cs[$i - 1] != 96))
+      | { start: $i,
+          len: ([ range($i; $len) as $k | select($cs[$k] != 96) | $k ] | first // $len) - $i } ];
+
+def clauses($cover):
+  explode as $cs
+  | ($cs | length) as $len
+  | backtick_runs($cs) as $runs
+  | ($runs | map({key: (.start | tostring), value: .len}) | from_entries) as $runat
+  | reduce range(0; $len) as $i (
+      { out: [], raw: [], masked: [], depth: 0, qdepth: 0, code: null };
+      ($cs[$i]) as $c
+      | ([$c] | implode) as $ch
+      | (if $i + 1 < $len then ([$cs[$i + 1]] | implode) else "" end) as $nx
+      | ($runat[$i | tostring]) as $run
+      | if $run != null and .code == null
+           and any($runs[]; .start > $i and .len == $run) then
+          .code = $run | .raw += [$c] | .masked += [32]
+        elif $run != null and .code == $run then .code = null | .raw += [$c] | .masked += [32]
+        elif .code != null then .raw += [$c] | .masked += [32]
+        elif $ch == "`" then .raw += [$c] | .masked += [32]
+        else
+          (if ($ch | test("^[「『“]$")) then .qdepth += 1 | .depth += 1
+           elif ($ch | test("^[」』”]$")) then .qdepth = ([0, .qdepth - 1] | max) | .depth = ([0, .depth - 1] | max)
+           elif ($ch | test("^[（(]$")) then .depth += 1
+           elif ($ch | test("^[）)]$")) then .depth = ([0, .depth - 1] | max)
+           else . end)
+          | .raw += [$c]
+          | .masked += [(if ($cover[$i] // false) or (.qdepth > 0 and ($ch | test("^[「『“」』”]$") | not)) then 32 else $c end)]
+          | if .depth == 0
+               and (($ch | test("^[。！？!?；;、，,\n]$"))
+                    or ($ch == "." and ($nx == "" or ($nx | test("^\\s$"))))) then
+              .out += [{raw: (.raw | implode), masked: (.masked | implode)}] | .raw = [] | .masked = []
+            else . end
+        end)
+  | .out + (if (.raw | length) > 0 then [{raw: (.raw | implode), masked: (.masked | implode)}] else [] end)
+  | map(select(.raw | test("\\S")));
+
+def en_ack_words: "\\backnowledged\\b|\\baddressed\\b|\\bfixed\\b";
+
+# 確認の語の打ち消し。$s は節の masked を小文字にしたもの、$m は語の一致。
+def negated2($s; $m):
+  ($s[0:$m.offset]) as $before
+  | ($s[($m.offset + ($m.string | length)):]) as $after
+  # 直前の否定（いまの規則のまま）
+  | ($s[([0, ($m.offset - 12)] | max):$m.offset]
+     | test("(未|まだ|未だに?|\\bnot\\b|\\bnot\\s+yet\\b|\\bun-?)[\\s*_~]*$"))
+  # 英語：同じ節の前に否定・条件・未来の語（has not been fixed / hasn'\''t been fixed / once this is fixed）
+  or (($m.string | test(en_ack_words))
+      and ($before | test("\\b(not|never|cannot|no longer|unless|until|if|once|whether|will|going to)\\b|n['\''’]t\\b|['\''’]ll\\b")))
+  # 日本語：後ろに付く否定（確認済みではありません / 対応済みでない / とは言えません）
+  or ($after | test("^[\\s*_~]*((では|じゃ|で)は?\\s*(ありません|ない|なく|なかった)|とは(言え|いえ)(ません|ない))"))
+  # 疑問（確認しましたか / 確認済みですか / Is it fixed?）
+  or ($after | test("^[\\s*_~]*(です|でした|でしょう)?\\s*か(?!ら)"))
+  or ($s | test("[?？]\\s*$"));
+
+# まだの表明（確認の語が無くても、その節は「打ち消し」になる）。
+def pending_cue:
+  "未(対応|確認|修正|対処|解決|反映|着手|完了)|まだ|(て|で)い?(ません|ない|なかった)|でき(ません|ない)|(では|じゃ)(ありません|ない)|\\b(not|never|cannot|pending|todo|tbd)\\b|n['\''’]t\\b|\\bno longer\\b";
+
+# 項目の本文を写した部分の印（$s は単位の本文を小文字にしたもの、$texts は項目の quote_text）。
+# 20 文字の窓が項目のどれかの本文にあれば、その 20 文字を作成者の文ではないとみなす。
+# 項目の文の `not`・`まだ`・`fixed` を、作成者の打ち消しや確認と読まないため。単位の全体で見てから節に分ける
+# （節に分けてから見ると、読点で切れた 20 文字未満の断片を写しと認められない）。
+def cover_flags($s; $texts):
+  ($s | explode | length) as $len
+  | (reduce range(0; ([0, $len - 19] | max)) as $i (
+      [range(0; $len) | false];
+      if (first($texts[] | select(contains($s[$i:$i + 20])) | 1) // null) != null then reduce range($i; $i + 20) as $k (.; .[$k] = true) else . end));
+
+# まだの表明の一致。直後が `こと`・`の`・`と`・`旨` の一致は数えない（`エラーが出ていないことを確認しました` の
+# `ていない` は、確認した内容であって、まだの表明ではない）。
+def pending_hits($s):
+  [ $s | match(pending_cue; "g")
+    | select(($s[(.offset + (.string | length)):] | test("^\\s*(こと|の|と|旨)")) | not) ];
+
+# 節の極性：pos（打ち消されない確認の語があり、打ち消しもまだの表明も無い）/
+# neg（打ち消された語かまだの表明がある。打ち消されない語と同じ節にあっても neg）/ none。
+# 同じ節に肯定と打ち消しが並ぶとき（`#10 is fixed and #11 is not fixed`）は、どの参照がどちらかを
+# 決められないので、節の全体を打ち消しにして赤の側に倒す。
+# 語・打ち消し・まだの表明は masked（引用・インラインのコード・項目の写しを空白にしたもの）で見る。
+def polarity:
+  (.masked | ascii_downcase) as $s
+  | ($s | test("(" + ack_words + ")")) as $has
+  | (if $has then
+       ( ($s | test("(未|まだ|未だに?|\\bnot\\b|\\bnot\\s+yet\\b|\\bun-?)[\\s*_~]*(" + ack_words + ")"))
+         or ($s | test("(\\b(not|never|cannot|no longer|unless|until|if|once|whether|will|going to)\\b|n['\''’]t\\b|['\''’]ll\\b)[\\s\\S]*?(" + en_ack_words + ")"))
+         or ($s | test("(" + ack_words + ")[\\s*_~]*((では|じゃ|で)は?\\s*(ありません|ない|なく|なかった)|とは(言え|いえ)(ません|ない))"))
+         or ($s | test("(" + ack_words + ")[\\s*_~]*(です|でした|でしょう)?\\s*か(?!ら)"))
+         or ($s | test("[?？]\\s*$")) )
+     else false end) as $negw
+  | ($s | test("(" + pending_cue + ")(?!\\s*(こと|の|と|旨))")) as $cue
+  | if $negw or $cue then "neg"
+    elif $has then "pos"
+    else "none" end;
+
+def split_contrast:
+  gsub("(?<a>(ました|です|でした|ません)が|けれども|けれど|けど|ものの)(?![、，,])"; "\(.a)\n")
+  | gsub("(?i)(?<a>[ \\t])(?<b>but|however|although|whereas)\\b"; "\(.a)\n\(.b)");
+
+# 文字列 $t が指す項目の位置（$its の key）。id か、その項目だけが持つ 20 文字の断片。
+def has_other($texts; $k; $w):
+  ($texts | length) as $n
+  | (first(range(0; $n) | select(. != $k and ($texts[.] | contains($w))) | 1) // null) != null;
+
+def refs_in($t; $its; $texts):
+  ($t | ascii_downcase) as $raw
+  | (norm_text(strip_urls($t))) as $b
+  | ($b | windows(20)) as $ws
+  | [ range(0; $its | length) as $k
+      | $its[$k] as $it
+      | $texts[$k] as $tb
+      | select(id_match($raw; (anchor($it.url) | ascii_downcase))
+               or ((first($ws[] | . as $w | select(($tb | contains($w)) and (has_other($texts; $k; $w) | not)) | 1) // null) != null))
+      | $k ];
+
+def mentions_in($t; $its; $texts):
+  ($t | ascii_downcase) as $raw
+  | (norm_text(strip_urls($t)) | windows(20)) as $ws
+  | [ range(0; $its | length) as $k
+      | $its[$k] as $it
+      | select(id_match($raw; (anchor($it.url) | ascii_downcase))
+               or ((first($ws[] | . as $w | select($texts[$k] | contains($w)) | 1) // null) != null))
+      | $k ];
+
+def acked_keys($its):
+  . as $a
+  | [ $its[] | quote_text(.) ] as $texts
+  | units as $us
+  | attach_targets($us) as $tg
+  | [ range(0; $us | length) as $j
+      | select($us[$j].type != "block")
+      | ($us[$j].text | split_contrast) as $st
+      | ($st | clauses(cover_flags($st | ascii_downcase; $texts)) | map(. + {pol: polarity})) as $cl
+      | { j: $j, type: $us[$j].type, cl: $cl,
+          pol: (if any($cl[]; .pol == "pos") and any($cl[]; .pol == "neg") then "mixed"
+                elif any($cl[]; .pol == "pos") then "pos"
+                elif any($cl[]; .pol == "neg") then "neg" else "none" end),
+          blocks: [ range(0; $us | length) as $b | select($tg[$b] == $j) | $us[$b].text ] } ] as $segs
+  | ($segs | map({key: (.j | tostring), value: .pol}) | from_entries) as $polof
+  # 拒否：打ち消しの節が触れた項目と、打ち消しの節を含む単位（neg・mixed）に付いたかたまりが触れた項目。
+  | ([ ($segs[] | .cl[] | select(.pol == "neg") | mentions_in(.raw; $its; $texts)[]),
+       ($segs[] | select(.pol == "neg" or .pol == "mixed") | .blocks[] | mentions_in(.; $its; $texts)[]) ] | unique) as $veto
+  | [ $segs[]
+      | if .pol == "pos" then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts)[]
+        elif .pol == "mixed" then (.cl[] | select(.pol == "pos") | refs_in(.raw; $its; $texts)[])
+        elif .pol == "none" and .type == "item" then
+          lead_of($us; .j) as $l
+          | if $l != null and $polof[$l | tostring] == "pos"
+            then refs_in(([$us[.j].text] + .blocks) | join("\n"); $its; $texts)[] else empty end
+        else empty end ]
+  | unique
+  | map(select(. as $k | $veto | index($k) | not));
+
+def report_author_login:
+  (.author.login // "") | sub("\\[bot\\]$"; "");
+
+def is_author:
+  (.author.login // "") == ($pr_author // "");
+
+# 既存の ignored_auto_report（著者＋本文パターン）。v1 のまま使う。
+def ignored_auto_report_pattern_list:
+  $ignored_auto_report_patterns
+  | split("\n")
+  | map(select(length > 0));
+
+def ignored_auto_report_author_pattern_list:
+  $ignored_auto_report_author_patterns
+  | split("\n")
+  | map(select(length > 0))
+  | map(split("\t") as $parts | select($parts | length >= 2) | {
+      author: $parts[0],
+      pattern: ($parts[1:] | join("\t"))
+    });
+
+def ignored_auto_report:
+  report_author_login as $author
+  | (.body // "") as $body
+  | any(ignored_auto_report_pattern_list[]; . as $p | $body | contains($p))
+    or any(ignored_auto_report_author_pattern_list[];
+           . as $e | $e.author == $author and ($body | contains($e.pattern)));
+
+# TAKT の失敗報告の種別。本文の語句ではなく、マーカーと著者・本文の形で決める。
+# マーカーはフェンスの外にあるときだけ効く（引用ではフェンスの中に入る）。
+def has_takt_marker:
+  strip_fences
+  | test("<!--\\s*takt:auto-report\\s*-->");
+
+# フェンスが 1 つ以上あり、フェンスの外が空白だけ（散文が無い）。
+# フェンスの直前に一文だけ散文がある形は、散文があるので自動報告にしない。
+def fenced_report_body:
+  fence_split
+  | .fenced > 0 and (.prose | join("\n") | test("^\\s*$"));
+
+# マーカーは作成者の投稿に限って効く。第三者が付けたマーカーは無視する。
+def takt_report:
+  is_author and (has_takt_marker or fenced_report_body);
+
+# 自動報告か。v1 の ignored_auto_report（著者＋本文パターン）に、
+# TAKT の失敗報告の種別を足す。既存の項目の選び方は変えない。
+def is_auto_report:
+  ignored_auto_report or takt_report;
+
+# Codex の承知。v1 と同じく文頭一致だけを見る。語彙も v1 と同じ trusted_ack_words だけ。
+# 本文の途中の `fixed` も、文頭の `Fixed` も承知にしない（Codex の要約を項目から消さない）。
+def trusted_acknowledgement:
+  report_author_login == "chatgpt-codex-connector" and ack_at_start;
+
+def is_item:
+  (trusted_acknowledgement | not)
+  and ((.author.login // "") != $pr_author)
+  and (
+    $pr_author_type != "Bot"
+    or (
+      .authorAssociation != "OWNER"
+      and .authorAssociation != "MEMBER"
+      and .authorAssociation != "COLLABORATOR"
+    )
+  );
+
+def is_acknowledger:
+  (.author.login // "") == $pr_author
+  or trusted_acknowledgement
+  or (
+    $pr_author_type == "Bot"
+    and (
+      .authorAssociation == "OWNER"
+      or .authorAssociation == "MEMBER"
+      or .authorAssociation == "COLLABORATOR"
+    )
+  );
+
+# 判定の順序: 先に自動報告を外し、残った候補だけで項目と承認を数える。
+# 自動報告は is_item にも is_acknowledger にも入らない（acked_keys より前）。
+# 確認ごとに、承認する項目の位置（$its の key）を acked_keys で求め、対象の最終編集より後のものだけを数える。
+. as $all
+| ($all | map(select(is_auto_report))) as $reports
+| ($all - $reports) as $candidates
+| ($candidates | map(select(is_item))) as $its
+| [ $candidates[] | select(is_acknowledger) | {at: .createdAt, keys: acked_keys($its)} ] as $acks
+| [ range(0; $its | length) as $k
+    | $its[$k] as $item
+    | select([ $acks[]
+               | select(.at > ($item.updatedAt // $item.createdAt))
+               | select(.keys | index($k) != null) ] | length == 0)
+    | $item
+  ]
   ' <<< "$comments"
 }
 
